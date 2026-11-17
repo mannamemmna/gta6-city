@@ -3,17 +3,96 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Block Dodger</title>
-<style>
-  html, body { margin: 0; height: 100%; overflow: hidden; background: #11141b; }
-  #game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
-  /* Read aloud, never shown: the status line screen readers announce. */
-  #status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
-</style>
+<title>Marisol Heat — Vela Costa</title>
+<link rel="stylesheet" href="./styles/hud.css">
+<script type="importmap">
+{ "imports": { "three": "./vendor/three.module.min.js" } }
+</script>
 </head>
 <body>
-<canvas id="game" aria-label="Block Dodger: move the paddle left and right to dodge falling blocks and catch coins"></canvas>
-<p id="status" role="status" aria-live="polite"></p>
+<canvas id="game" aria-label="Marisol Heat: an open-world crime game in the city of Vela Costa"></canvas>
+
+<div id="hud" class="hud">
+  <div id="minimap-wrap" class="minimap-wrap">
+    <canvas id="minimap" width="240" height="240"></canvas>
+    <div id="district" class="district">VELA COSTA</div>
+  </div>
+
+  <div id="top-right" class="top-right">
+    <div id="stars" class="stars" aria-label="wanted level"></div>
+    <div id="clock" class="clock">18:40</div>
+    <div id="money" class="money">$0</div>
+  </div>
+
+  <div id="vitals" class="vitals">
+    <div class="bar-row"><span class="bar-label">HP</span><div class="bar"><i id="health-fill" class="fill health"></i></div></div>
+    <div class="bar-row"><span class="bar-label">ARM</span><div class="bar"><i id="armor-fill" class="fill armor"></i></div></div>
+  </div>
+
+  <div id="weapon" class="weapon">
+    <span class="weapon-name">SIDEARM</span>
+    <span class="weapon-ammo"><b id="ammo">12</b><i>/96</i></span>
+  </div>
+
+  <div id="speedo" class="speedo hidden">
+    <div class="spd-dial"><svg viewBox="0 0 120 120"><circle class="dial-bg" cx="60" cy="60" r="52"></circle><circle id="spd-arc" class="dial-arc" cx="60" cy="60" r="52"></circle></svg></div>
+    <div class="spd-num"><b id="speed-value">0</b><span>KM/H</span></div>
+    <div id="vehicle-name" class="vehicle-name">SABUESO GT</div>
+  </div>
+
+  <div id="objective" class="objective">
+    <div class="obj-kicker">MISSION</div>
+    <div id="obj-title" class="obj-title">No mission</div>
+    <div id="obj-text" class="obj-text">Explore the city. Talk to the glowing contact marker.</div>
+  </div>
+
+  <div id="dialogue" class="dialogue hidden">
+    <div id="dlg-who" class="dlg-who">MARISOL</div>
+    <div id="dlg-text" class="dlg-text"></div>
+  </div>
+
+  <div id="toast" class="toast"></div>
+  <div id="banner" class="banner hidden"><div id="banner-kicker" class="banner-kicker">MISSION COMPLETE</div><div id="banner-title" class="banner-title"></div></div>
+  <div id="crosshair" class="crosshair"></div>
+  <div id="prompt" class="prompt hidden"></div>
+  <div id="help" class="help">WASD move · mouse look · SHIFT sprint · E enter / exit · LMB fire · F horn · V camera · ESC pause</div>
+</div>
+
+<div id="title" class="screen title-screen">
+  <div class="title-bg"></div>
+  <div class="title-inner">
+    <div class="title-kicker">VELA COSTA · 1998</div>
+    <h1 class="logo"><span>MARISOL</span><span class="logo-2">HEAT</span></h1>
+    <div class="tagline">Sun, sand, and a debt that follows you home.</div>
+    <div class="menu">
+      <button id="btn-new" class="menu-item">NEW GAME</button>
+      <button id="btn-continue" class="menu-item">CONTINUE</button>
+      <button id="btn-controls" class="menu-item">CONTROLS</button>
+    </div>
+    <div id="controls-card" class="controls-card hidden">
+      <div><b>WASD</b> walk / drive</div>
+      <div><b>Mouse</b> look · <b>Shift</b> sprint</div>
+      <div><b>E</b> enter / exit vehicle · <b>F</b> horn</div>
+      <div><b>LMB</b> fire · <b>RMB</b> aim · <b>V</b> camera</div>
+      <div><b>Esc</b> pause · <b>M</b> map</div>
+    </div>
+    <div class="title-foot">An original open-world crime game · no network, no build step</div>
+  </div>
+</div>
+
+<div id="pause" class="screen pause-screen hidden">
+  <div class="pause-card">
+    <h2>PAUSED</h2>
+    <div class="menu">
+      <button id="btn-resume" class="menu-item">RESUME</button>
+      <button id="btn-save" class="menu-item">SAVE GAME</button>
+      <button id="btn-quit" class="menu-item">QUIT TO TITLE</button>
+    </div>
+    <div id="save-note" class="save-note"></div>
+  </div>
+</div>
+
+<p id="status" role="status" aria-live="polite" class="sr"></p>
 <script type="module" src="./src/main.js"></script>
 </body>
 </html>

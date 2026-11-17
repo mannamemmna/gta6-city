@@ -1,0 +1,219 @@
+/* Marisol Heat HUD. Warm 1998 Miami-poster palette: cream, coral, teal, gold. Everything is
+   absolutely positioned over the WebGL canvas and hidden while the title or pause screen is up. */
+
+:root {
+  --cream: #f6ead6;
+  --coral: #e8624a;
+  --gold: #f2c14e;
+  --teal: #1f7a7a;
+  --ink: #14161a;
+  --panel: rgba(16, 20, 26, 0.62);
+  --panel-solid: rgba(12, 16, 21, 0.88);
+}
+
+* { box-sizing: border-box; }
+
+html, body {
+  margin: 0; height: 100%; overflow: hidden; background: #0b0d11;
+  font-family: "Trebuchet MS", "Segoe UI", system-ui, sans-serif;
+  color: var(--cream);
+  -webkit-font-smoothing: antialiased;
+}
+
+#game { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+
+.sr { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+
+.hud { position: fixed; inset: 0; pointer-events: none; z-index: 10; }
+.hidden { display: none !important; }
+
+/* ---------------------------------------------------------------- minimap */
+.minimap-wrap {
+  position: absolute; left: 26px; top: 24px; width: 208px; height: 208px;
+  border-radius: 8px; overflow: hidden;
+  box-shadow: 0 8px 30px rgba(0,0,0,0.6), 0 0 0 2px rgba(246,234,214,0.5), 0 0 0 6px rgba(16,20,26,0.6);
+  transform: rotate(-0.6deg);
+}
+#minimap { width: 100%; height: 100%; display: block; background: #0d1a22; }
+.district {
+  position: absolute; left: 0; right: 0; bottom: 0; padding: 6px 8px 5px;
+  font-size: 10px; letter-spacing: 2.4px; font-weight: 700; text-align: center;
+  background: linear-gradient(to top, rgba(9,12,16,0.95), rgba(9,12,16,0));
+  color: var(--gold);
+}
+
+/* ---------------------------------------------------------------- top right */
+.top-right {
+  position: absolute; right: 26px; top: 22px; text-align: right;
+  padding: 8px 12px 9px; border-radius: 8px;
+  background: linear-gradient(to left, rgba(10,14,19,0.78), rgba(10,14,19,0.42));
+  box-shadow: inset 0 0 0 1px rgba(246,234,214,0.12);
+  backdrop-filter: blur(2px);
+}
+.stars { display: flex; gap: 3px; justify-content: flex-end; height: 24px; }
+.stars i {
+  width: 22px; height: 22px; display: block;
+  background: rgba(246,234,214,0.14);
+  clip-path: polygon(50% 0%, 61% 35%, 98% 35%, 68% 57%, 79% 91%, 50% 70%, 21% 91%, 32% 57%, 2% 35%, 39% 35%);
+  border: 0;
+}
+.stars i.on { background: var(--gold); box-shadow: 0 0 10px rgba(242,193,78,0.85); }
+.stars i.hot { background: var(--coral); box-shadow: 0 0 12px rgba(232,98,74,0.9); }
+.clock { font-size: 15px; letter-spacing: 2px; font-weight: 700; color: rgba(246,234,214,0.92); margin-top: 3px; text-shadow: 0 2px 6px #000; }
+.money {
+  font-family: Georgia, "Times New Roman", serif;
+  font-size: 29px; font-weight: 700; color: #d8f0c0;
+  text-shadow: 0 2px 0 rgba(0,0,0,0.5), 0 0 22px rgba(120,220,120,0.35);
+  letter-spacing: 0.5px;
+}
+
+/* ---------------------------------------------------------------- vitals */
+.vitals {
+  position: absolute; left: 28px; bottom: 26px; width: 232px;
+  padding: 9px 11px 10px; border-radius: 6px;
+  background: rgba(10,14,19,0.55); box-shadow: inset 0 0 0 1px rgba(246,234,214,0.14);
+}
+.bar-row { display: flex; align-items: center; gap: 8px; margin-top: 5px; }
+.bar-row:first-child { margin-top: 0; }
+.bar-label { width: 26px; font-size: 9px; letter-spacing: 1px; font-weight: 700; color: rgba(246,234,214,0.78); }
+.bar { flex: 1; height: 9px; background: rgba(8,10,14,0.66); border-radius: 2px; box-shadow: inset 0 0 0 1px rgba(246,234,214,0.22); overflow: hidden; }
+.fill { display: block; height: 100%; width: 100%; transition: width 140ms linear; }
+.fill.health { background: linear-gradient(to right, #6fce5a, #a8e06a); }
+.fill.armor { background: linear-gradient(to right, #4a9fe8, #7fd2ff); }
+
+/* ---------------------------------------------------------------- weapon */
+.weapon {
+  position: absolute; right: 26px; bottom: 92px; text-align: right;
+  background: var(--panel); padding: 7px 12px; border-radius: 4px;
+  box-shadow: inset 0 0 0 1px rgba(246,234,214,0.2);
+}
+.weapon-name { display: block; font-size: 10px; letter-spacing: 2px; color: rgba(246,234,214,0.65); }
+.weapon-ammo { font-family: Georgia, serif; font-size: 21px; color: var(--cream); }
+.weapon-ammo i { font-size: 13px; color: rgba(246,234,214,0.55); font-style: normal; }
+.weapon-ammo.low b { color: var(--coral); }
+
+/* ---------------------------------------------------------------- speedo */
+.speedo {
+  position: absolute; right: 26px; bottom: 26px; width: 140px; height: 156px;
+  display: flex; flex-direction: column; align-items: center; justify-content: flex-end;
+  padding-bottom: 4px; border-radius: 50% 50% 8px 8px;
+  background: radial-gradient(circle at 50% 62%, rgba(10,14,19,0.82), rgba(10,14,19,0.2) 70%);
+}
+.spd-dial { position: absolute; inset: 0; }
+.spd-dial svg { width: 100%; height: 100%; transform: rotate(135deg); }
+.dial-bg { fill: none; stroke: rgba(10,14,18,0.62); stroke-width: 11; stroke-dasharray: 245 330; stroke-linecap: round; }
+.dial-arc { fill: none; stroke: var(--gold); stroke-width: 7; stroke-dasharray: 0 330; stroke-linecap: round; filter: drop-shadow(0 0 6px rgba(242,193,78,0.8)); }
+.spd-num { position: relative; text-align: center; margin-bottom: 34px; }
+.spd-num b { font-family: Georgia, serif; font-size: 34px; color: #fff; display: block; line-height: 1; text-shadow: 0 2px 10px rgba(0,0,0,0.8); }
+.spd-num span { font-size: 9px; letter-spacing: 2px; color: rgba(246,234,214,0.65); }
+.vehicle-name { position: absolute; bottom: 2px; font-size: 9px; letter-spacing: 2px; color: var(--gold); }
+
+/* ---------------------------------------------------------------- objective */
+.objective {
+  position: absolute; left: 26px; top: 252px; width: 262px;
+  padding: 9px 12px 10px;
+  background: linear-gradient(to right, rgba(12,16,21,0.82), rgba(12,16,21,0.36));
+  border-left: 3px solid var(--gold);
+  border-radius: 3px;
+}
+.obj-kicker { font-size: 9px; letter-spacing: 3px; color: var(--gold); font-weight: 700; }
+.obj-title { font-family: Georgia, serif; font-size: 19px; margin: 2px 0 3px; color: #fff4e2; }
+.obj-text { font-size: 12px; line-height: 1.35; color: rgba(246,234,214,0.82); }
+
+/* ---------------------------------------------------------------- dialogue */
+.dialogue {
+  position: absolute; left: 50%; bottom: 78px; transform: translateX(-50%);
+  width: min(660px, 74vw); padding: 12px 18px 14px;
+  background: rgba(10,13,18,0.82);
+  border-top: 2px solid var(--gold); border-radius: 4px;
+  box-shadow: 0 12px 40px rgba(0,0,0,0.55);
+}
+.dlg-who { font-size: 11px; letter-spacing: 3px; color: var(--gold); font-weight: 700; margin-bottom: 4px; }
+.dlg-text { font-size: 15px; line-height: 1.45; color: #f7eddc; }
+
+/* ---------------------------------------------------------------- toast + banner */
+.toast {
+  position: absolute; left: 50%; top: 13%; transform: translateX(-50%);
+  font-size: 13px; letter-spacing: 1px; color: #fff;
+  background: rgba(10,13,18,0.66); padding: 6px 14px; border-radius: 20px;
+  opacity: 0; transition: opacity 260ms ease;
+}
+.toast.show { opacity: 1; }
+.banner {
+  position: absolute; left: 0; right: 0; top: 28%; text-align: center;
+  padding: 18px 0 22px;
+  background: linear-gradient(to right, rgba(10,13,18,0), rgba(10,13,18,0.82) 22%, rgba(10,13,18,0.82) 78%, rgba(10,13,18,0));
+  animation: bannerIn 400ms ease both;
+}
+.banner-kicker { font-size: 11px; letter-spacing: 6px; color: var(--gold); }
+.banner-title { font-family: Georgia, serif; font-size: 44px; letter-spacing: 1px; color: #fff6e6; text-shadow: 0 4px 24px rgba(0,0,0,0.6); }
+@keyframes bannerIn { from { opacity: 0; transform: scale(0.97); } to { opacity: 1; transform: scale(1); } }
+
+/* ---------------------------------------------------------------- crosshair + prompts */
+.crosshair {
+  position: absolute; left: 50%; top: 50%; width: 6px; height: 6px; margin: -3px 0 0 -3px;
+  border-radius: 50%; background: rgba(255,255,255,0.85); box-shadow: 0 0 0 2px rgba(0,0,0,0.35);
+  opacity: 0.55;
+}
+.prompt {
+  position: absolute; left: 50%; top: 62%; transform: translateX(-50%);
+  font-size: 13px; letter-spacing: 1px; color: #fff;
+  background: rgba(10,13,18,0.7); padding: 7px 15px; border-radius: 4px;
+  box-shadow: inset 0 0 0 1px rgba(246,234,214,0.3);
+}
+.prompt b { color: var(--gold); }
+.help {
+  position: absolute; left: 50%; bottom: 10px; transform: translateX(-50%);
+  font-size: 10px; letter-spacing: 0.7px; color: rgba(246,234,214,0.72);
+  white-space: nowrap; padding: 4px 12px; border-radius: 4px;
+  background: rgba(10,13,18,0.5); text-shadow: 0 1px 3px rgba(0,0,0,0.9);
+}
+
+/* ---------------------------------------------------------------- screens */
+.screen { position: fixed; inset: 0; z-index: 30; display: flex; align-items: center; justify-content: center; }
+.title-screen { background: #120f14; }
+.title-bg {
+  position: absolute; inset: 0;
+  background:
+    radial-gradient(ellipse 60% 46% at 74% 22%, rgba(255,178,102,0.34), transparent 70%),
+    radial-gradient(ellipse 70% 60% at 20% 90%, rgba(31,122,122,0.28), transparent 70%),
+    linear-gradient(160deg, #1b1220 0%, #2c1a26 38%, #46232c 62%, #7a3a33 100%);
+}
+.title-bg::after {
+  content: ""; position: absolute; inset: 0;
+  background-image: repeating-linear-gradient(0deg, rgba(0,0,0,0.16) 0 1px, transparent 1px 3px);
+  opacity: 0.5;
+}
+.title-inner { position: relative; text-align: center; padding: 30px; }
+.title-kicker { font-size: 11px; letter-spacing: 8px; color: rgba(246,234,214,0.6); margin-bottom: 6px; }
+.logo { margin: 0; line-height: 0.82; font-family: Georgia, "Times New Roman", serif; font-weight: 700; }
+.logo span { display: block; font-size: clamp(58px, 9.4vw, 124px); letter-spacing: 6px; color: #f8e7cd; text-shadow: 0 6px 0 rgba(150,40,40,0.55), 0 12px 44px rgba(0,0,0,0.6); }
+.logo .logo-2 { color: #f2c14e; font-size: clamp(46px, 7.4vw, 98px); letter-spacing: 18px; margin-left: 14px; }
+.tagline { margin-top: 16px; font-style: italic; font-size: 15px; color: rgba(246,234,214,0.82); letter-spacing: 0.4px; }
+.menu { margin-top: 26px; display: flex; flex-direction: column; gap: 7px; align-items: center; }
+.menu-item {
+  font-family: "Trebuchet MS", sans-serif; font-size: 15px; letter-spacing: 3px; font-weight: 700;
+  color: var(--cream); background: rgba(20,16,20,0.45);
+  border: 1px solid rgba(246,234,214,0.28); border-radius: 2px;
+  padding: 10px 34px; min-width: 260px; cursor: pointer;
+  transition: background 140ms ease, color 140ms ease, transform 140ms ease;
+  pointer-events: auto;
+}
+.menu-item:hover, .menu-item:focus-visible { background: var(--gold); color: #23180c; transform: translateX(3px); outline: none; }
+.menu-item:disabled { opacity: 0.35; cursor: default; transform: none; background: rgba(20,16,20,0.45); color: var(--cream); }
+.controls-card {
+  margin: 18px auto 0; display: grid; gap: 5px; font-size: 12px; color: rgba(246,234,214,0.8);
+  background: rgba(10,8,12,0.5); padding: 12px 18px; border-radius: 3px; width: fit-content;
+}
+.controls-card b { color: var(--gold); }
+.title-foot { margin-top: 22px; font-size: 10px; letter-spacing: 2px; color: rgba(246,234,214,0.35); }
+
+.pause-screen { background: rgba(8,10,14,0.72); backdrop-filter: blur(3px); }
+.pause-card { text-align: center; }
+.pause-card h2 { font-family: Georgia, serif; font-size: 42px; letter-spacing: 8px; margin: 0 0 18px; color: #f8e7cd; }
+.save-note { margin-top: 14px; font-size: 12px; color: var(--gold); height: 16px; letter-spacing: 1px; }
+
+@media (max-height: 620px) {
+  .objective { top: 210px; }
+  .minimap-wrap { width: 170px; height: 170px; }
+}
