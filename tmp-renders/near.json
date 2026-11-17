@@ -1,3 +1,0 @@
-[
-  { "name": "near", "js": "const near=g.vehicles.filter(v=>Math.hypot(v.x-41.8,v.z-150)<45).map(v=>v.spec.id+'@'+Math.round(v.x)+','+Math.round(v.z)+(v.parked?'P':'')+(v.ai?(':'+v.ai.kind):'')); console.log('NEAR:',near.join(' ')); console.log('TOTAL',g.vehicles.length,'PEDS',g.peds.length);" }
-]

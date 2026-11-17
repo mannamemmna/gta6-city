@@ -1,6 +1,0 @@
-[
-  { "name": "k1", "js": "g.world.clock=18.35;g.sunOverride={az:0.55,el:0.17};g.fogOverride=1300;g.cam.pos=[78,30,250];g.cam.target=[-20,34,-110];g.cam.fov=1.05;let i=0;for(const v of g.vehicles){if(v.ai||v.parked){v.x=38.5-(i%2?3.3:-3.3);v.z=250-(Math.floor(i/2)*22);if(i%2){v.yaw=Math.PI;}v.vx=0;v.vz=0;i++;}if(i>18)break;}" },
-  { "name": "k2", "js": "g.world.clock=18.35;g.sunOverride={az:0.55,el:0.17};g.fogOverride=1200;g.cam.pos=[88,22,205];g.cam.target=[-14,30,-120];g.cam.fov=1.06;let i=0;for(const v of g.vehicles){if(v.ai||v.parked){v.x=38.5-(i%2?3.3:-3.3);v.z=205-(Math.floor(i/2)*20);if(i%2){v.yaw=Math.PI;}v.vx=0;v.vz=0;i++;}if(i>18)break;}" },
-  { "name": "k3", "js": "g.world.clock=18.35;g.sunOverride={az:0.55,el:0.16};g.fogOverride=1250;g.cam.pos=[70,38,300];g.cam.target=[-24,30,-130];g.cam.fov=1.02;let i=0;for(const v of g.vehicles){if(v.ai||v.parked){v.x=38.5-(i%2?3.3:-3.3);v.z=300-(Math.floor(i/2)*24);if(i%2){v.yaw=Math.PI;}v.vx=0;v.vz=0;i++;}if(i>18)break;}" },
-  { "name": "k4", "js": "g.world.clock=18.35;g.sunOverride={az:0.62,el:0.14};g.fogOverride=1180;g.cam.pos=[96,16,180];g.cam.target=[-10,34,-140];g.cam.fov=1.08;let i=0;for(const v of g.vehicles){if(v.ai||v.parked){v.x=38.5-(i%2?3.3:-3.3);v.z=180-(Math.floor(i/2)*18);if(i%2){v.yaw=Math.PI;}v.vx=0;v.vz=0;i++;}if(i>18)break;}" }
-]
