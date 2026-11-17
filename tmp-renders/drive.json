@@ -1,0 +1,6 @@
+[
+  { "name": "e1", "js": "g.cam.pos=[37.4,2.30,89.0];g.cam.target=[38.8,1.35,120];g.cam.fov=1.10;" },
+  { "name": "e2", "js": "g.cam.pos=[37.2,1.95,88.0];g.cam.target=[38.9,1.25,122];g.cam.fov=1.12;" },
+  { "name": "e3", "js": "g.cam.pos=[37.6,2.55,90.5];g.cam.target=[38.6,1.45,118];g.cam.fov=1.06;" },
+  { "name": "e4", "js": "g.cam.pos=[35.0,2.10,88.5];g.cam.target=[40.5,1.30,118];g.cam.fov=1.14;" }
+]

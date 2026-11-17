@@ -1,189 +1,168 @@
-// Hand-in program for the gta6-01 bounty: stage the entry, emit the dossier, report what shipped.
+// Hand-in program for the Cobalt Bay entry (gta6-01).
 //
-// The game in game/ is a folder of static files that a desktop browser opens offline, so handing it
-// in is mostly a copy. The real work is refusal: every gate cap is checked before the dossier is
-// built and the failure says which rule was broken, because the alternative is an opaque rejection
-// at grading time.
+// A Node 22 program, standard library only: it validates the repository's game/
+// and screenshots/ against the bounty's caps, copies them into the output
+// directory the grader gives it (MAKEFUN_OUTPUT_DIR stands in for /output
+// outside the grader), then writes dossier.json with the kit's own
+// buildDossier so the dossier is byte for byte what the scorer would produce.
 //
-// Runs as-is — `node main.ts`, no compile step, no install. Node's standard library plus the
-// vendored ./vendor/makefun-game.ts, nothing else.
+//   mkdir -p out && MAKEFUN_OUTPUT_DIR=out node main.ts
 //
-//   MAKEFUN_OUTPUT_DIR=out node main.ts     # stage into ./out instead of /output
+// Nothing here touches the network; the game itself is plain static files that
+// run offline from game/index.html.
 
 import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createHash } from 'node:crypto';
 import { buildDossier } from './vendor/makefun-game.ts';
 
-// ---------------------------------------------------------------- the bounty's limits
+const HERE = dirname(fileURLToPath(import.meta.url));
+const OUT = resolve(process.env.MAKEFUN_OUTPUT_DIR ?? '/output');
 
-// Mirrors the gate: identical caps mean the program refuses exactly what the scorer would, in its
-// own words. Only text_max_bytes reshapes the dossier's bytes — the rest can only refuse — so
-// passing all of them is what makes a local run trustworthy.
-const GATE = {
-  text_max_bytes: 163_840, // 160 KiB of source text carried in the dossier
-  screenshots: { max: 4, max_bytes: 262_144 }, // four renders at most, 256 KiB each
-  game_max_files: 993, // game/ entries; /output as a whole is capped at 1000
-  game_max_bytes: 50_331_648, // 48 MiB of files under game/
-  game_path_max_bytes: 1000, // one path under game/, in UTF-8 bytes
-} as const;
+// The scorer's limits (its own reference/gate.json). Only text_max_bytes changes
+// the dossier's bytes; the rest are checked here so a run fails loudly rather
+// than handing in something the gate would reject.
+const CAPS = {
+  text_max_bytes: 163840,
+  screenshots: { max: 4, max_bytes: 262144 },
+  game_max_files: 993,
+  game_max_bytes: 50331648,
+  game_path_max_bytes: 1000,
+};
+const MIN_SHOTS = 1;
+const SHOT_EXT = /\.(jpe?g|png)$/i;
 
-const SHOT_LIMIT_COUNT: number = GATE.screenshots.max;
-const SHOT_LIMIT_BYTES: number = GATE.screenshots.max_bytes;
-
-// ---------------------------------------------------------------- checks and small tools
-
-/** Stop the run unless `condition` holds. The message names the broken rule, never a stack trace. */
-function require_(condition: boolean, failure: string): void {
-  if (condition) return;
-  throw new Error(`entry refused: ${failure}`);
+function fail(message: string): never {
+  process.stderr.write(`main.ts: ${message}\n`);
+  process.exit(1);
 }
 
-interface Measure {
-  files: number;
-  bytes: number;
-}
-
-/**
- * Every regular file below `root`, recursively, with the sum of their sizes. Subdirectories are
- * walked but not counted: this feeds the printed summary, while the file-and-directory cap belongs
- * to buildDossier, which counts entries the way the platform does.
- */
-function measure(root: string): Measure {
-  const total: Measure = { files: 0, bytes: 0 };
-  const walk = (rel: string): void => {
-    for (const entry of readdirSync(rel === '' ? root : join(root, rel), { withFileTypes: true })) {
-      const child = rel === '' ? entry.name : `${rel}/${entry.name}`;
-      if (entry.isDirectory()) {
-        walk(child);
-      } else if (entry.isFile()) {
-        total.files += 1;
-        total.bytes += statSync(join(root, child)).size;
-      }
-    }
-  };
-  walk('');
-  return total;
-}
-
-type ImageKind = 'png' | 'jpeg';
-
-/**
- * What a file's leading bytes prove it is, independent of its name. A render's extension is a hint,
- * and a mis-named file would eventually be refused with a message about neither PNG nor JPEG —
- * pointing at the wrong thing. Checking the magic bytes here points at the file itself.
- */
-function imageKindOf(head: Buffer): ImageKind | null {
-  const opensWith = (magic: readonly number[]): boolean =>
-    head.length >= magic.length && magic.every((byte, at) => head[at] === byte);
-  if (opensWith([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) return 'png'; // \x89PNG\r\n\x1a\n
-  if (opensWith([0xff, 0xd8, 0xff])) return 'jpeg'; // SOI + the first marker's leading byte
+// JPEG starts ff d8 ff, PNG starts 89 50 4e 47 0d 0a 1a 0a. Trust the bytes, not
+// the extension: the gate decodes the file.
+function imageKind(buf: Buffer): 'jpeg' | 'png' | null {
+  if (buf.length >= 3 && buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'jpeg';
+  if (buf.length >= 8 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47 &&
+      buf[4] === 0x0d && buf[5] === 0x0a && buf[6] === 0x1a && buf[7] === 0x0a) return 'png';
   return null;
 }
 
-interface Render {
-  name: string;
-  bytes: number;
+type Entry = { full: string; dir: boolean; size: number };
+
+function listEntries(root: string): Entry[] {
+  const out: Entry[] = [];
+  const walk = (dir: string) => {
+    for (const entry of readdirSync(dir, { withFileTypes: true })) {
+      const full = join(dir, entry.name);
+      if (entry.isSymbolicLink()) fail(`${relative(HERE, full)} is a symlink; game/ must be plain files and directories`);
+      if (entry.isDirectory()) { out.push({ full, dir: true }); walk(full); }
+      else if (entry.isFile()) out.push({ full, dir: false, size: statSync(full).size });
+      else fail(`${relative(HERE, full)} is not a regular file or directory`);
+    }
+  };
+  walk(root);
+  return out;
 }
 
-/**
- * The renders to hand in: the visible files of the source screenshots/ folder, in name order, so
- * the first name is the cover. Each one is held to the count, size, extension and magic-byte rules
- * here rather than left for the dossier builder to discover.
- */
-function collectRenders(dir: string): Render[] {
-  require_(existsSync(dir) && statSync(dir).isDirectory(), `no screenshots/ folder at ${dir}`);
+function checkGame() {
+  const gameDir = join(HERE, 'game');
+  if (!existsSync(gameDir)) fail('game/ is missing beside main.ts');
+  const index = join(gameDir, 'index.html');
+  if (!existsSync(index) || !statSync(index).isFile()) fail('game/index.html is missing');
+  const indexSize = statSync(index).size;
+  if (indexSize > 1048576) fail(`game/index.html is ${indexSize} bytes, over the 1 MiB cap`);
 
-  const names = readdirSync(dir, { withFileTypes: true })
-    .filter((entry) => entry.isFile() && !entry.name.startsWith('.'))
-    .map((entry) => entry.name)
-    .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+  const entries = listEntries(gameDir);
+  const count = entries.length + 1; // the directory itself counts toward the cap
+  if (count > CAPS.game_max_files) fail(`game/ holds ${count} entries, over the ${CAPS.game_max_files} cap`);
+  let bytes = 0;
+  for (const e of entries) {
+    const rel = relative(gameDir, e.full);
+    if (Buffer.byteLength(rel, 'utf8') > CAPS.game_path_max_bytes) fail(`game/${rel} has a path over ${CAPS.game_path_max_bytes} bytes`);
+    if (!e.dir) bytes += e.size;
+  }
+  if (bytes > CAPS.game_max_bytes) fail(`game/ holds ${bytes} bytes, over the ${CAPS.game_max_bytes} cap`);
+  return { files: entries.filter((e) => !e.dir).length, dirs: entries.filter((e) => e.dir).length, bytes };
+}
 
-  require_(names.length > 0, 'screenshots/ holds nothing: at least one render is required, the first name the cover');
-  require_(
-    names.length <= SHOT_LIMIT_COUNT,
-    `screenshots/ holds ${names.length} files, over the ${SHOT_LIMIT_COUNT} this bounty accepts`,
+function checkScreenshots() {
+  const dir = join(HERE, 'screenshots');
+  if (!existsSync(dir)) fail('screenshots/ is missing beside main.ts');
+  const files = readdirSync(dir, { withFileTypes: true })
+    .filter((e) => e.isFile() && !e.name.startsWith('.'))
+    .map((e) => e.name)
+    .sort();
+  if (files.length < MIN_SHOTS) fail(`screenshots/ holds ${files.length} images, need ${MIN_SHOTS}`);
+  if (files.length > CAPS.screenshots.max) fail(`screenshots/ holds ${files.length} images, over the ${CAPS.screenshots.max} cap`);
+  let bytes = 0;
+  for (const name of files) {
+    if (!SHOT_EXT.test(name)) fail(`screenshots/${name} is not a .jpg or .png`);
+    const full = join(dir, name);
+    const size = statSync(full).size;
+    if (size > CAPS.screenshots.max_bytes) fail(`screenshots/${name} is ${size} bytes, over the ${CAPS.screenshots.max_bytes} cap`);
+    const kind = imageKind(readFileSync(full).subarray(0, 8));
+    if (!kind) fail(`screenshots/${name} is not a JPEG or PNG (its first bytes say neither)`);
+    bytes += size;
+  }
+  return { count: files.length, bytes, files };
+}
+
+function copyTree(from: string, to: string) {
+  if (!existsSync(from)) return;
+  mkdirSync(to, { recursive: true });
+  cpSync(from, to, { recursive: true });
+}
+
+function bytesOf(dir: string): number {
+  let total = 0;
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, e.name);
+    if (e.isDirectory()) total += bytesOf(full);
+    else if (e.isFile()) total += statSync(full).size;
+  }
+  return total;
+}
+
+function countFiles(dir: string): number {
+  let n = 0;
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, e.name);
+    if (e.isDirectory()) n += countFiles(full);
+    else if (e.isFile()) n += 1;
+  }
+  return n;
+}
+
+function main() {
+  const game = checkGame();
+  const shots = checkScreenshots();
+
+  // start from a clean output so a stale run can never leak into a dossier
+  mkdirSync(OUT, { recursive: true });
+  rmSync(join(OUT, 'game'), { recursive: true, force: true });
+  rmSync(join(OUT, 'screenshots'), { recursive: true, force: true });
+
+  copyTree(join(HERE, 'game'), join(OUT, 'game'));
+  copyTree(join(HERE, 'screenshots'), join(OUT, 'screenshots'));
+
+  const dossier = buildDossier(OUT, CAPS);
+  writeFileSync(join(OUT, 'dossier.json'), dossier);
+
+  const sha = createHash('sha256').update(dossier).digest('hex');
+  const outGameBytes = bytesOf(join(OUT, 'game'));
+  const outShotBytes = bytesOf(join(OUT, 'screenshots'));
+
+  process.stdout.write(
+    [
+      'Cobalt Bay · gta6-01 entry',
+      `  game/        ${countFiles(join(OUT, 'game'))} files, ${outGameBytes} bytes` +
+        ` (${game.files} source+asset files, ${game.dirs} dirs in the repository copy)`,
+      `  screenshots/ ${shots.count} files, ${outShotBytes} bytes: ${shots.files.join(', ')}`,
+      `  dossier.json ${dossier.length} bytes, sha256 ${sha}`,
+      `  output       ${OUT}`,
+      '',
+    ].join('\n'),
   );
-
-  return names.map((name) => {
-    const file = join(dir, name);
-    const size = statSync(file).size;
-
-    require_(size > 0, `screenshots/${name} is an empty file`);
-    require_(size <= SHOT_LIMIT_BYTES, `screenshots/${name} weighs ${size} bytes, over the ${SHOT_LIMIT_BYTES} allowed`);
-
-    const actual = imageKindOf(readFileSync(file));
-    require_(actual !== null, `screenshots/${name} is neither PNG nor JPEG: its first bytes match neither magic`);
-
-    const dot = name.lastIndexOf('.');
-    const ext = dot < 0 ? '' : name.slice(dot + 1).toLowerCase();
-    const claimed: ImageKind | null = ext === 'png' ? 'png' : ext === 'jpg' || ext === 'jpeg' ? 'jpeg' : null;
-
-    require_(claimed !== null, `screenshots/${name}: renders are named .png or .jpg, not ".${ext}"`);
-    require_(
-      claimed === actual,
-      `screenshots/${name} claims ".${ext}" but its bytes are ${actual.toUpperCase()} — renamed file?`,
-    );
-
-    return { name, bytes: size };
-  });
 }
 
-// ---------------------------------------------------------------- what to stage, from where
-
-const projectDir = dirname(fileURLToPath(import.meta.url));
-const outputDir = process.env.MAKEFUN_OUTPUT_DIR ?? '/output';
-const gameSrc = join(projectDir, 'game');
-const shotsSrc = join(projectDir, 'screenshots');
-
-// game/index.html is the one file a game cannot be without. Grep for it before any copying, so a
-// missing page never leaves a half-staged output directory behind.
-const pageSrc = join(gameSrc, 'index.html');
-require_(existsSync(pageSrc), `game/index.html is missing from ${gameSrc} — that page is the game`);
-require_(statSync(pageSrc).isFile(), 'game/index.html is not a regular file');
-
-const renders = collectRenders(shotsSrc);
-
-// ---------------------------------------------------------------- staging
-
-try {
-  mkdirSync(outputDir, { recursive: true });
-} catch (err) {
-  // Outside the grader there is no writable /output; say what to do instead of dumping errno.
-  throw new Error(
-    `cannot create the output directory ${outputDir} (${(err as Error).message}); ` +
-      'set MAKEFUN_OUTPUT_DIR to a writable path, e.g. MAKEFUN_OUTPUT_DIR=out node main.ts',
-  );
-}
-
-// Each staged folder is cleared first: leftovers from an earlier run would be counted by the
-// dossier and could push the entry past a cap for files that are no longer part of it.
-for (const folder of ['game', 'screenshots']) rmSync(join(outputDir, folder), { recursive: true, force: true });
-
-cpSync(gameSrc, join(outputDir, 'game'), { recursive: true });
-
-const shotsOut = join(outputDir, 'screenshots');
-mkdirSync(shotsOut, { recursive: true });
-for (const render of renders) cpSync(join(shotsSrc, render.name), join(shotsOut, render.name));
-
-// The page must be where the dossier will look for it, not merely present in the source tree.
-require_(existsSync(join(outputDir, 'game', 'index.html')), 'game/index.html did not survive the copy into the output');
-
-// ---------------------------------------------------------------- the dossier
-
-const dossier = buildDossier(outputDir, GATE);
-writeFileSync(join(outputDir, 'dossier.json'), dossier);
-
-// ---------------------------------------------------------------- the summary
-
-const stagedGame = measure(join(outputDir, 'game'));
-const stagedShots = measure(shotsOut);
-const column = (label: string): string => label.padEnd(16, ' ');
-const row = (label: string, m: Measure): string =>
-  `${column(label)}${String(m.files).padStart(3)} file${m.files === 1 ? '' : 's'}, ${m.bytes} bytes`;
-
-console.log(`staged      ${outputDir}`);
-console.log(row('game/', stagedGame));
-console.log(row('screenshots/', stagedShots));
-console.log(`${column('dossier.json')}     ${dossier.length} bytes`);
-console.log(`cover       screenshots/${renders[0]!.name}`);
+main();

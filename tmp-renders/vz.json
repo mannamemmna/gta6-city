@@ -1,0 +1,6 @@
+[
+  { "name": "vz1", "js": "g.cam.pos=[34.5,21,236];g.cam.target=[34.5,7,-184];g.fogOverride=600;g.paint();" },
+  { "name": "vz2", "js": "g.cam.pos=[34.5,26,236];g.cam.target=[34.5,9,-184];g.fogOverride=620;g.paint();" },
+  { "name": "vz3", "js": "g.cam.pos=[31.5,22,236];g.cam.target=[35.5,8,-184];g.fogOverride=560;g.paint();" },
+  { "name": "vz4", "js": "g.cam.pos=[37.5,18,240];g.cam.target=[34.0,7,-184];g.fogOverride=560;g.paint();" }
+]

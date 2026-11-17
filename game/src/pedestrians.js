@@ -1,188 +1,185 @@
-// Pedestrians: a pool of low-poly humans walking the sidewalks ring of each block, plus joggers on
-// the promenade. They keep to the pavement, cross at the corners, flinch and run when shots are
-// fired or a car is bearing down on them, and drop a little cash when they go down.
-import { Humanoid } from './humanoid.js';
-import { createRandom } from './rng.js';
+// Pedestrians: a crowd that walks the pavement ring of each block, crosses at
+// corners, panics when shots land or a car bears down on them, and can be knocked
+// flying. Bodies leave a chalk outline for a while.
 
-export class PedestrianSystem {
-  constructor(city, scene, seed = 55) {
-    this.city = city;
-    this.scene = scene;
-    this.rng = createRandom(seed);
-    this.peds = [];
-    this.spawn();
+import { CITY, PEDS } from './config.js';
+import { angleDelta, clamp, damp } from './math3d.js';
+import { drawPerson } from './models.js';
+import { pick, range } from './rng.js';
+
+export class Pedestrian {
+  constructor(world, rng, x, z, block) {
+    this.world = world;
+    this.x = x; this.z = z;
+    this.y = world.groundAt(x, z);
+    this.rng = rng;
+    this.block = block;
+    this.radius = PEDS.radius;
+    this.speed = PEDS.walk * range(rng, 0.82, 1.24);
+    this.yaw = rng() * Math.PI * 2;
+    this.shirt = hex(pick(rng, PEDS.shirts));
+    this.pants = hex(pick(rng, PEDS.pants));
+    this.skin = hex(pick(rng, PEDS.skin));
+    this.hair = hex(pick(rng, PEDS.hair));
+    this.hat = rng() < 0.16 ? hex(pick(rng, PEDS.pants)) : null;
+    this.phase = rng() * 10;
+    this.moving = 1;
+    this.state = 'walk';
+    this.timer = 0;
+    this.health = 40;
+    this.dead = false;
+    this.fleeing = 0;
+    this.target = null;
+    this.talk = 0;
+    this.witness = false;
+    // pick a pavement waypoint
+    this.pickWaypoint();
   }
 
-  spawn() {
-    const rng = this.rng;
-    const city = this.city;
-    const count = 300;
-    for (let i = 0; i < count; i += 1) {
-      const block = city.blocks[rng.int(0, city.blocks.length - 1)];
-      const rig = new Humanoid({ random: () => rng.next() });
-      // half the crowd on the promenade for the beach look
-      const promenade = rng.chance(0.22);
-      const inset = block.half - 1.7;
-      const corner = rng.int(0, 3);
-      const along = rng.range(-inset, inset);
-      const sides = [
-        { x: block.x + along, z: block.z - inset, dir: 'x' },
-        { x: block.x + inset, z: block.z + along, dir: 'z' },
-        { x: block.x + along, z: block.z + inset, dir: 'x' },
-        { x: block.x - inset, z: block.z + along, dir: 'z' },
-      ];
-      const s = promenade
-        ? { x: rng.range(-city.maxX, city.maxX), z: city.beachZ + rng.range(2, 10), dir: 'x' }
-        : sides[corner];
-      const ped = {
-        rig,
-        x: s.x, z: s.z,
-        heading: rng.range(0, Math.PI * 2),
-        speed: rng.range(1.1, 1.8),
-        walkSpeed: rng.range(1.1, 1.8),
-        runSpeed: rng.range(3.6, 5.2),
-        panic: 0,
-        dead: false,
-        deadT: 0,
-        loot: rng.chance(0.35) ? rng.int(20, 90) : 0,
-        mode: promenade ? 'promenade' : 'block',
-        block,
-        corner,
-        along,
-        inset,
-        dirSign: rng.chance(0.5) ? 1 : -1,
-        phase: rng.range(0, 6.28),
-        look: rng.range(0, 6.28),
-        armSwing: 0,
-      };
-      rig.setPosition(ped.x, 0, ped.z);
-      rig.setHeading(ped.heading);
-      this.scene.add(rig.group);
-      this.peds.push(ped);
+  pickWaypoint() {
+    const b = this.block;
+    if (!b) {
+      this.target = { x: this.x + range(this.rng, -20, 20), z: this.z + range(this.rng, -20, 20) };
+      return;
     }
+    const edge = Math.floor(this.rng() * 4);
+    const inset = 2.2;
+    const lo = -b.side / 2 + 5, hi = b.side / 2 - 5;
+    const a = range(this.rng, lo, hi);
+    if (edge === 0) this.target = { x: b.x + a, z: b.z - b.side / 2 + inset };
+    else if (edge === 1) this.target = { x: b.x + a, z: b.z + b.side / 2 - inset };
+    else if (edge === 2) this.target = { x: b.x - b.side / 2 + inset, z: b.z + a };
+    else this.target = { x: b.x + b.side / 2 - inset, z: b.z + a };
   }
 
-  panicAt(x, z, radius = 26) {
-    for (const ped of this.peds) {
-      if (ped.dead) continue;
-      const d = Math.hypot(ped.x - x, ped.z - z);
-      if (d < radius) {
-        ped.panic = Math.max(ped.panic, 4.2 + this.rng.range(0, 2));
-        ped.heading = Math.atan2(ped.x - x, ped.z - z);
+  scare(source, duration = 4) {
+    this.fleeing = Math.max(this.fleeing, duration);
+    this.fleeFrom = { x: source.x, z: source.z };
+    this.state = 'flee';
+  }
+
+  hurt(amount, dir, world) {
+    this.health -= amount;
+    if (this.health <= 0) {
+      this.dead = true;
+      this.state = 'down';
+      world.addDecal(this.x, this.z, 1.1, [0.36, 0.05, 0.06], 30);
+      world.addFloater(this.x, this.y + 1.4, this.z, '-', [0.9, 0.3, 0.3]);
+      return true;
+    }
+    this.scare(this.fleeFrom ?? this, 6);
+    return false;
+  }
+
+  update(dt, game) {
+    if (this.dead) return;
+    this.timer += dt;
+    if (this.fleeing > 0) this.fleeing -= dt;
+    const player = game.player;
+
+    // panic if the player is shooting nearby or a car is charging
+    const dpx = player.x - this.x, dpz = player.z - this.z;
+    const dp = Math.hypot(dpx, dpz);
+    if (game.alarmLevel > 0.05 && dp < 26 && this.fleeing <= 0 && this.rng() < 0.02) {
+      this.scare(player, 5);
+    }
+    if (this.fleeing > 0 && this.fleeing < 0.1) this.state = 'walk';
+
+    let tx = this.target.x, tz = this.target.z;
+    let speed = this.speed;
+    if (this.state === 'flee') {
+      const away = Math.atan2(this.x - (this.fleeFrom?.x ?? player.x), this.z - (this.fleeFrom?.z ?? player.z));
+      tx = this.x + Math.sin(away) * 12;
+      tz = this.z + Math.cos(away) * 12;
+      speed = PEDS.run;
+    }
+
+    const dx = tx - this.x, dz = tz - this.z;
+    const d = Math.hypot(dx, dz);
+    if (d < 1.1) {
+      if (this.state === 'flee') { this.pickWaypoint(); }
+      else { this.pickWaypoint(); this.timer = 0; }
+    }
+    const want = Math.atan2(-dx, dz);
+    this.yaw += angleDelta(this.yaw, want) * Math.min(1, dt * 7);
+
+    const step = speed * dt;
+    let nx = this.x - Math.sin(this.yaw) * step;
+    let nz = this.z + Math.cos(this.yaw) * step;
+
+    // avoid the player's body and the car if one is close
+    const [rx, rz] = this.world.colliders.resolve(nx, nz, this.radius);
+    if (Math.abs(rx - nx) > 0.001 || Math.abs(rz - nz) > 0.001) {
+      // slid along a wall: pick a fresh heading
+      if (this.rng() < 0.06) this.pickWaypoint();
+    }
+    nx = rx; nz = rz;
+
+    // step out of the player's way
+    if (dp < 1.0 && dp > 0.01) {
+      nx += (dpx / dp) * (1.0 - dp);
+      nz += (dpz / dp) * (1.0 - dp);
+    }
+
+    this.x = nx; this.z = nz;
+    this.y = this.world.groundAt(this.x, this.z);
+    this.moving = damp(this.moving, this.state === 'flee' ? 1.5 : 0.8, 6, dt);
+    this.phase += dt * (0.6 + this.moving * 1.4);
+
+    // don't swim
+    if (this.world.isWater(this.x, this.z)) {
+      this.x -= -Math.sin(this.yaw) * step;
+      this.z -= Math.cos(this.yaw) * step;
+      this.pickWaypoint();
+    }
+
+    // react to traffic
+    for (const v of game.vehicles) {
+      const ddx = v.x - this.x, ddz = v.z - this.z;
+      const dd = Math.hypot(ddx, ddz);
+      if (dd < 6.5 && v.speed > 7 && this.fleeing <= 0) {
+        this.scare(v, 2.4);
+      }
+      if (dd < (v.spec.wid * 0.7 + 0.5) && v.speed > 3) {
+        // clipped by a car
+        this.hurt(60, v, this.world);
+        this.x += (this.x - v.x) * 0.4;
+        this.z += (this.z - v.z) * 0.4;
       }
     }
   }
 
-  update(dt, player) {
-    const city = this.city;
-    const px = player.car ? player.car.x : player.x;
-    const pz = player.car ? player.car.z : player.z;
-    for (const ped of this.peds) {
-      if (ped.dead) {
-        ped.deadT += dt;
-        ped.rig.update(dt, 0);
-        continue;
-      }
-      ped.panic = Math.max(0, ped.panic - dt);
-      // avoid standing inside a building: nudge back onto the ring
-      const speed = ped.panic > 0 ? ped.runSpeed : ped.walkSpeed;
-
-      if (ped.panic > 0) {
-        // run away from the player, still respecting walls
-        const away = Math.atan2(ped.x - px, ped.z - pz);
-        ped.heading = away;
-        ped.x += Math.sin(away) * speed * dt;
-        ped.z += Math.cos(away) * speed * dt;
-      } else if (ped.mode === 'promenade') {
-        ped.x += ped.dirSign * speed * dt;
-        if (ped.x > city.maxX) { ped.x = city.minX; ped.dirSign = 1; }
-        if (ped.x < city.minX) { ped.x = city.maxX; ped.dirSign = -1; }
-        ped.heading = ped.dirSign > 0 ? Math.PI / 2 : -Math.PI / 2;
-        ped.z += (city.beachZ + 6 - ped.z) * Math.min(1, dt * 0.4) * 0.1;
-      } else {
-        // walk the block ring: corner by corner
-        const b = ped.block;
-        const inset = ped.inset;
-        const targets = [
-          { x: b.x + inset, z: b.z - inset },
-          { x: b.x + inset, z: b.z + inset },
-          { x: b.x - inset, z: b.z + inset },
-          { x: b.x - inset, z: b.z - inset },
-        ];
-        const t = targets[ped.nextCorner ?? ((ped.corner + 1) % 4)];
-        ped.nextCorner = ped.nextCorner ?? ((ped.corner + 1) % 4);
-        const dx = t.x - ped.x;
-        const dz = t.z - ped.z;
-        const d = Math.hypot(dx, dz);
-        if (d < 1.6) {
-          ped.nextCorner = (ped.nextCorner + 1) % 4;
-        } else {
-          ped.heading = Math.atan2(dx, dz);
-          ped.x += (dx / d) * speed * dt;
-          ped.z += (dz / d) * speed * dt;
-        }
-        // step off the sidewalk into the crosswalk now and then, straight across the block
-        if (!ped.crossing && this.rng.chance(0.0009)) {
-          ped.crossing = { x: b.x + (this.rng.chance(0.5) ? 1 : -1) * (b.half + 12), z: ped.z };
-        }
-        if (ped.crossing) {
-          const cdx = ped.crossing.x - ped.x;
-          const cdz = ped.crossing.z - ped.z;
-          const cd = Math.hypot(cdx, cdz);
-          if (cd < 1.5) ped.crossing = null;
-          else {
-            ped.heading = Math.atan2(cdx, cdz);
-            ped.x += (cdx / cd) * speed * dt;
-            ped.z += (cdz / cd) * speed * dt;
-          }
-        }
-      }
-
-      // look toward a nearby player when idle-ish
-      const dist = Math.hypot(ped.x - px, ped.z - pz);
-      if (dist < 9 && ped.panic <= 0) {
-        ped.heading = Math.atan2(px - ped.x, pz - ped.z);
-      }
-      // keep out of buildings and off the kerb edges
-      ped.rig.setPosition(ped.x, 0, ped.z);
-      ped.rig.setHeading(ped.heading);
-      ped.rig.update(dt, speed);
-    }
+  draw(buf) {
+    drawPerson(buf, {
+      x: this.x, y: this.y, z: this.z, yaw: this.yaw,
+      shirt: this.shirt, pants: this.pants, skin: this.skin, hair: this.hair,
+      hat: this.hat, phase: this.phase, moving: this.moving, down: this.dead,
+      aim: false, gun: false,
+    });
   }
-
-  /** Nearest live pedestrian in front of a ray: used by gunfire. */
-  hitTest(origin, dir, maxDist) {
-    let best = null;
-    let bestT = maxDist;
-    for (const ped of this.peds) {
-      if (ped.dead) continue;
-      const t = raySphere(origin, dir, { x: ped.x, y: 1.1, z: ped.z }, 0.62);
-      if (t !== null && t < bestT) { bestT = t; best = ped; }
-    }
-    return best ? { ped: best, t: bestT } : null;
-  }
-
-  kill(ped) {
-    if (ped.dead) return;
-    ped.dead = true;
-    ped.deadT = 0;
-    ped.rig.die();
-  }
-
-  liveCount() { return this.peds.filter((p) => !p.dead).length; }
 }
 
-export function raySphere(origin, dir, centre, radius) {
-  const ox = origin.x - centre.x;
-  const oy = origin.y - centre.y;
-  const oz = origin.z - centre.z;
-  const b = ox * dir.x + oy * dir.y + oz * dir.z;
-  const c = ox * ox + oy * oy + oz * oz - radius * radius;
-  const disc = b * b - c;
-  if (disc < 0) return null;
-  const sq = Math.sqrt(disc);
-  const t0 = -b - sq;
-  const t1 = -b + sq;
-  if (t1 < 0) return null;
-  return t0 > 0.1 ? t0 : t1;
+export function spawnCrowd(world, rng) {
+  const peds = [];
+  const blocks = world.city.blocks;
+  let tries = 0;
+  while (peds.length < PEDS.count && tries < PEDS.count * 8) {
+    tries++;
+    const b = blocks[Math.floor(rng() * blocks.length)];
+    const edge = Math.floor(rng() * 4);
+    const inset = 2.0;
+    const lo = -b.side / 2 + 5, hi = b.side / 2 - 5;
+    const a = range(rng, lo, hi);
+    let x, z;
+    if (edge === 0) { x = b.x + a; z = b.z - b.side / 2 + inset; }
+    else if (edge === 1) { x = b.x + a; z = b.z + b.side / 2 - inset; }
+    else if (edge === 2) { x = b.x - b.side / 2 + inset; z = b.z + a; }
+    else { x = b.x + b.side / 2 - inset; z = b.z + a; }
+    peds.push(new Pedestrian(world, rng, x, z, b));
+  }
+  return peds;
+}
+
+function hex(v) {
+  return [((v >> 16) & 255) / 255, ((v >> 8) & 255) / 255, (v & 255) / 255];
 }

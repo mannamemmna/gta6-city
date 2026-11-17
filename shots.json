@@ -1,1 +1,6 @@
-[{"name":"1-cover.jpg","query":"?shot=cover"},{"name":"2-driving.jpg","query":"?shot=driving"},{"name":"3-mission.jpg","query":"?shot=mission"},{"name":"4-city.jpg","query":"?shot=vista"}]
+[
+  { "name": "1-cover.jpg", "query": "?shot=cover" },
+  { "name": "2-driving.jpg", "query": "?shot=driving" },
+  { "name": "3-mission.jpg", "query": "?shot=mission" },
+  { "name": "4-city.jpg", "query": "?shot=vista" }
+]

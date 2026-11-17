@@ -1,0 +1,6 @@
+[
+  { "name": "vv1", "js": "g.cam.pos=[65,22,236];g.cam.target=[91,12,-164];g.cam.fov=1.02;" },
+  { "name": "vv2", "js": "g.cam.pos=[110,26,250];g.cam.target=[88,10,-150];g.cam.fov=1.02;" },
+  { "name": "vv3", "js": "g.cam.pos=[91,30,270];g.cam.target=[91,12,-150];g.cam.fov=1.02;" },
+  { "name": "vv4", "js": "g.cam.pos=[70,14,250];g.cam.target=[92,14,-160];g.cam.fov=1.06;" }
+]

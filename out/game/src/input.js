@@ -1,85 +1,67 @@
-// Keyboard and mouse: WASD state, mouse-look deltas consumed once per frame, and one-shot key
-// events (enter/exit, horn, camera, pause, map). Pointer lock is requested on the first click.
+// Keyboard and mouse, read once per frame. The game owns the pointer lock so the
+// camera turns with the mouse; clicking the canvas grabs it, Esc lets it go.
 
-export const KEY = {
-  forward: ['KeyW', 'ArrowUp'],
-  back: ['KeyS', 'ArrowDown'],
-  left: ['KeyA', 'ArrowLeft'],
-  right: ['KeyD', 'ArrowRight'],
-  sprint: ['ShiftLeft', 'ShiftRight'],
-  jump: ['Space'],
-};
+export class Input {
+  constructor(canvas) {
+    this.canvas = canvas;
+    this.keys = new Set();
+    this.pressed = new Set();
+    this.mouseDX = 0;
+    this.mouseDY = 0;
+    this.mouseDown = false;
+    this.mouseClicked = false;
+    this.locked = false;
+    this.wheel = 0;
+    this.onKey = null;
 
-export function createInput(canvas) {
-  const down = new Set();
-  const pressed = new Set();
-  let mouseDX = 0;
-  let mouseDY = 0;
-  let firing = false;
-  let aiming = false;
-  let locked = false;
-  let sensitivity = 0.0022;
+    window.addEventListener('keydown', (e) => {
+      const k = e.code;
+      if (['Space', 'ShiftLeft', 'KeyW', 'KeyA', 'KeyS', 'KeyD', 'Tab'].includes(k)) e.preventDefault();
+      if (!this.keys.has(k)) this.pressed.add(k);
+      this.keys.add(k);
+      if (this.onKey) this.onKey(k, e);
+    });
+    window.addEventListener('keyup', (e) => { this.keys.delete(e.code); });
+    window.addEventListener('blur', () => { this.keys.clear(); this.mouseDown = false; });
 
-  const onKeyDown = (e) => {
-    if (e.repeat) {
-      return;
-    }
-    down.add(e.code);
-    pressed.add(e.code);
-    if (['Space', 'ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight', 'Tab'].includes(e.code)) e.preventDefault();
-  };
-  const onKeyUp = (e) => down.delete(e.code);
-  const onBlur = () => { down.clear(); firing = false; aiming = false; };
-  const onMove = (e) => {
-    if (!locked) return;
-    mouseDX += e.movementX;
-    mouseDY += e.movementY;
-  };
-  const onMouseDown = (e) => {
-    if (e.button === 0) firing = true;
-    if (e.button === 2) aiming = true;
-  };
-  const onMouseUp = (e) => {
-    if (e.button === 0) firing = false;
-    if (e.button === 2) aiming = false;
-  };
-  const onLockChange = () => { locked = document.pointerLockElement === canvas; };
-  const onContext = (e) => e.preventDefault();
+    canvas.addEventListener('mousedown', (e) => {
+      if (e.button === 0) { this.mouseDown = true; this.mouseClicked = true; }
+      if (!this.locked && this.canRequestLock) this.lock();
+    });
+    window.addEventListener('mouseup', (e) => { if (e.button === 0) this.mouseDown = false; });
+    window.addEventListener('mousemove', (e) => {
+      if (this.locked) { this.mouseDX += e.movementX; this.mouseDY += e.movementY; }
+    });
+    canvas.addEventListener('wheel', (e) => { this.wheel += Math.sign(e.deltaY); e.preventDefault(); }, { passive: false });
+    canvas.addEventListener('contextmenu', (e) => e.preventDefault());
+    document.addEventListener('pointerlockchange', () => {
+      this.locked = document.pointerLockElement === this.canvas;
+      if (!this.locked && this.onUnlock) this.onUnlock();
+    });
+    this.canRequestLock = true;
+  }
 
-  window.addEventListener('keydown', onKeyDown);
-  window.addEventListener('keyup', onKeyUp);
-  window.addEventListener('blur', onBlur);
-  window.addEventListener('mousedown', onMouseDown);
-  window.addEventListener('mouseup', onMouseUp);
-  window.addEventListener('mousemove', onMove);
-  document.addEventListener('pointerlockchange', onLockChange);
-  canvas.addEventListener('contextmenu', onContext);
+  lock() {
+    const p = this.canvas.requestPointerLock?.();
+    if (p && p.catch) p.catch(() => {});
+  }
+  unlock() { if (document.pointerLockElement) document.exitPointerLock(); }
 
-  return {
-    axis() {
-      const f = (KEY.forward.some((k) => down.has(k)) ? 1 : 0) - (KEY.back.some((k) => down.has(k)) ? 1 : 0);
-      const s = (KEY.right.some((k) => down.has(k)) ? 1 : 0) - (KEY.left.some((k) => down.has(k)) ? 1 : 0);
-      return { forward: f, strafe: s };
-    },
-    isDown: (code) => down.has(code),
-    sprinting: () => KEY.sprint.some((k) => down.has(k)),
-    takePressed(code) {
-      if (pressed.has(code)) { pressed.delete(code); return true; }
-      return false;
-    },
-    pressedAny: () => [...pressed],
-    endFrame() { pressed.clear(); mouseDX = 0; mouseDY = 0; },
-    takeMouse() {
-      const d = { x: mouseDX * sensitivity, y: mouseDY * sensitivity };
-      return d;
-    },
-    get firing() { return firing; },
-    get aiming() { return aiming; },
-    get locked() { return locked; },
-    requestLock() {
-      if (!locked && canvas.requestPointerLock) canvas.requestPointerLock();
-    },
-    releaseLock() { if (document.pointerLockElement) document.exitPointerLock(); },
-    setSensitivity(v) { sensitivity = v; },
-  };
+  down(code) { return this.keys.has(code); }
+  hit(code) { return this.pressed.has(code); }
+  axis() {
+    let x = 0, y = 0;
+    if (this.down('KeyW') || this.down('ArrowUp')) y += 1;
+    if (this.down('KeyS') || this.down('ArrowDown')) y -= 1;
+    if (this.down('KeyD') || this.down('ArrowRight')) x += 1;
+    if (this.down('KeyA') || this.down('ArrowLeft')) x -= 1;
+    return { x, y };
+  }
+  endFrame() {
+    this.pressed.clear();
+    this.mouseDX = 0;
+    this.mouseDY = 0;
+    this.mouseClicked = false;
+    this.wheel = 0;
+  }
 }

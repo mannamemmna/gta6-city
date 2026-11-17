@@ -3,96 +3,112 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Marisol Heat — Vela Costa</title>
-<link rel="stylesheet" href="./styles/hud.css">
-<script type="importmap">
-{ "imports": { "three": "./vendor/three.module.min.js" } }
-</script>
+<title>Cobalt Bay</title>
+<style>
+  :root {
+    --sand: #f2dcc0;
+    --deep: #1b2430;
+    --accent: #ff9d4d;
+    --teal: #2fb8a8;
+  }
+  html, body { margin: 0; height: 100%; overflow: hidden; background: #10151c; }
+  canvas { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+  #gl { z-index: 0; touch-action: none; }
+  #hud { z-index: 1; pointer-events: none; }
+  .screen {
+    position: fixed; inset: 0; z-index: 3; display: flex; flex-direction: column;
+    align-items: center; justify-content: center; color: var(--sand);
+    font-family: "Helvetica Neue", Helvetica, Arial, sans-serif;
+    background: radial-gradient(ellipse at 50% 40%, rgba(18,26,36,0.35), rgba(9,13,19,0.9) 78%);
+    -webkit-font-smoothing: antialiased;
+  }
+  .screen.hidden { display: none; }
+  .wordmark { font-family: Georgia, "Times New Roman", serif; letter-spacing: 0.16em; }
+  #title h1 { font-size: clamp(48px, 11vw, 132px); margin: 0; line-height: 0.92; text-transform: uppercase; font-weight: 400;
+    text-shadow: 0 6px 40px rgba(255,120,40,0.35), 0 2px 0 rgba(0,0,0,0.4); }
+  #title h1 span { color: var(--accent); }
+  #title .tagline { margin: 18px 0 0; font-size: 15px; letter-spacing: 0.42em; text-transform: uppercase; color: #e8cdae; opacity: 0.85; }
+  #title .rule { width: 220px; height: 2px; margin: 26px 0; background: linear-gradient(90deg, transparent, var(--accent), transparent); }
+  #title .menu { display: flex; flex-direction: column; gap: 14px; margin-top: 6px; }
+  .btn { pointer-events: auto; cursor: pointer; background: rgba(255,255,255,0.06); border: 1px solid rgba(255,190,140,0.28);
+    color: var(--sand); padding: 13px 42px; font-size: 14px; letter-spacing: 0.3em; text-transform: uppercase;
+    font-family: inherit; transition: background 0.15s, border-color 0.15s, transform 0.15s; }
+  .btn:hover { background: rgba(255,157,77,0.22); border-color: var(--accent); transform: translateY(-1px); }
+  .btn.ghost { background: transparent; border-color: rgba(255,255,255,0.14); color: #cfbfae; }
+  .keys { display: grid; grid-template-columns: auto auto; gap: 4px 18px; margin-top: 34px; font-size: 12px;
+    letter-spacing: 0.08em; color: #cdbba6; opacity: 0.9; }
+  .keys b { font-family: ui-monospace, Menlo, Consolas, monospace; color: #fff3e2; font-weight: 600; text-align: right; }
+  #pause h2, #dead h2 { font-family: Georgia, serif; font-size: 44px; letter-spacing: 0.2em; margin: 0 0 6px; text-transform: uppercase; }
+  #dead h2 { color: #e4584c; }
+  #dead .sub { color: #d8c3ab; letter-spacing: 0.2em; font-size: 12px; text-transform: uppercase; margin-bottom: 26px; }
+  #missioncard { position: fixed; inset: 0; z-index: 4; display: none; align-items: center; justify-content: flex-start;
+    padding-left: 9vw; background: linear-gradient(90deg, rgba(8,12,18,0.86) 0%, rgba(8,12,18,0.5) 42%, transparent 72%); }
+  #missioncard .box { max-width: 520px; }
+  #missioncard .kicker { color: var(--accent); letter-spacing: 0.34em; font-size: 12px; text-transform: uppercase; }
+  #missioncard h3 { font-family: Georgia, serif; font-size: 40px; margin: 10px 0 14px; letter-spacing: 0.02em; }
+  #missioncard p { font-size: 16px; line-height: 1.55; color: #ddcbb5; margin: 0 0 10px; }
+  #missioncard .who { font-size: 13px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--teal); }
+  #loading { position: fixed; inset: 0; z-index: 6; display: flex; align-items: center; justify-content: center;
+    background: #0c1117; color: #d9c6ad; letter-spacing: 0.3em; font-size: 13px; text-transform: uppercase;
+    font-family: Helvetica, Arial, sans-serif; }
+  #status { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+</style>
 </head>
 <body>
-<canvas id="game" aria-label="Marisol Heat: an open-world crime game in the city of Vela Costa"></canvas>
+<canvas id="gl" aria-label="Cobalt Bay, an open world crime game. Explore the city on foot or by car."></canvas>
+<canvas id="hud"></canvas>
 
-<div id="hud" class="hud">
-  <div id="minimap-wrap" class="minimap-wrap">
-    <canvas id="minimap" width="240" height="240"></canvas>
-    <div id="district" class="district">VELA COSTA</div>
+<div id="loading">building cobalt bay</div>
+
+<div class="screen hidden" id="title">
+  <div class="wordmark">
+    <h1>COBALT <span>BAY</span></h1>
+    <p class="tagline">Salt air · dirty money</p>
   </div>
-
-  <div id="top-right" class="top-right">
-    <div id="stars" class="stars" aria-label="wanted level"></div>
-    <div id="clock" class="clock">18:40</div>
-    <div id="money" class="money">$0</div>
+  <div class="rule"></div>
+  <div class="menu">
+    <button class="btn" id="btn-new">New Game</button>
+    <button class="btn ghost hidden" id="btn-continue">Continue</button>
   </div>
-
-  <div id="vitals" class="vitals">
-    <div class="bar-row"><span class="bar-label">HP</span><div class="bar"><i id="health-fill" class="fill health"></i></div></div>
-    <div class="bar-row"><span class="bar-label">ARM</span><div class="bar"><i id="armor-fill" class="fill armor"></i></div></div>
-  </div>
-
-  <div id="weapon" class="weapon">
-    <span class="weapon-name">SIDEARM</span>
-    <span class="weapon-ammo"><b id="ammo">12</b><i>/96</i></span>
-  </div>
-
-  <div id="speedo" class="speedo hidden">
-    <div class="spd-dial"><svg viewBox="0 0 120 120"><circle class="dial-bg" cx="60" cy="60" r="52"></circle><circle id="spd-arc" class="dial-arc" cx="60" cy="60" r="52"></circle></svg></div>
-    <div class="spd-num"><b id="speed-value">0</b><span>KM/H</span></div>
-    <div id="vehicle-name" class="vehicle-name">SABUESO GT</div>
-  </div>
-
-  <div id="objective" class="objective">
-    <div class="obj-kicker">MISSION</div>
-    <div id="obj-title" class="obj-title">No mission</div>
-    <div id="obj-text" class="obj-text">Explore the city. Talk to the glowing contact marker.</div>
-  </div>
-
-  <div id="dialogue" class="dialogue hidden">
-    <div id="dlg-who" class="dlg-who">MARISOL</div>
-    <div id="dlg-text" class="dlg-text"></div>
-  </div>
-
-  <div id="toast" class="toast"></div>
-  <div id="banner" class="banner hidden"><div id="banner-kicker" class="banner-kicker">MISSION COMPLETE</div><div id="banner-title" class="banner-title"></div></div>
-  <div id="crosshair" class="crosshair"></div>
-  <div id="prompt" class="prompt hidden"></div>
-  <div id="help" class="help">WASD move · mouse look · SHIFT sprint · E enter / exit · LMB fire · F horn · V camera · ESC pause</div>
-</div>
-
-<div id="title" class="screen title-screen">
-  <div class="title-bg"></div>
-  <div class="title-inner">
-    <div class="title-kicker">VELA COSTA · 1998</div>
-    <h1 class="logo"><span>MARISOL</span><span class="logo-2">HEAT</span></h1>
-    <div class="tagline">Sun, sand, and a debt that follows you home.</div>
-    <div class="menu">
-      <button id="btn-new" class="menu-item">NEW GAME</button>
-      <button id="btn-continue" class="menu-item">CONTINUE</button>
-      <button id="btn-controls" class="menu-item">CONTROLS</button>
-    </div>
-    <div id="controls-card" class="controls-card hidden">
-      <div><b>WASD</b> walk / drive</div>
-      <div><b>Mouse</b> look · <b>Shift</b> sprint</div>
-      <div><b>E</b> enter / exit vehicle · <b>F</b> horn</div>
-      <div><b>LMB</b> fire · <b>RMB</b> aim · <b>V</b> camera</div>
-      <div><b>Esc</b> pause · <b>M</b> map</div>
-    </div>
-    <div class="title-foot">An original open-world crime game · no network, no build step</div>
+  <div class="keys">
+    <b>W A S D</b><span>move · drive</span>
+    <b>MOUSE</b><span>look · aim</span>
+    <b>LEFT CLICK</b><span>fire</span>
+    <b>F</b><span>enter / exit vehicle</span>
+    <b>SHIFT</b><span>sprint · handbrake</span>
+    <b>SPACE</b><span>jump · brake</span>
+    <b>R</b><span>reload</span>
+    <b>M</b><span>map · pause</span>
+    <b>ESC</b><span>pause</span>
   </div>
 </div>
 
-<div id="pause" class="screen pause-screen hidden">
-  <div class="pause-card">
-    <h2>PAUSED</h2>
-    <div class="menu">
-      <button id="btn-resume" class="menu-item">RESUME</button>
-      <button id="btn-save" class="menu-item">SAVE GAME</button>
-      <button id="btn-quit" class="menu-item">QUIT TO TITLE</button>
-    </div>
-    <div id="save-note" class="save-note"></div>
+<div class="screen hidden" id="pause">
+  <h2>Paused</h2>
+  <div class="rule"></div>
+  <div class="menu">
+    <button class="btn" id="btn-resume">Resume</button>
+    <button class="btn ghost" id="btn-save">Save Game</button>
+    <button class="btn ghost" id="btn-quit">Quit to Title</button>
   </div>
 </div>
 
-<p id="status" role="status" aria-live="polite" class="sr"></p>
+<div class="screen hidden" id="dead">
+  <h2 id="dead-title">Wasted</h2>
+  <div class="sub" id="dead-sub">Cobalt Bay General Hospital · $200 billed</div>
+  <button class="btn" id="btn-respawn">Get Up</button>
+</div>
+
+<div class="screen hidden" id="missioncard">
+  <div class="box">
+    <div class="kicker" id="mc-kicker">Mission</div>
+    <h3 id="mc-title"></h3>
+    <p id="mc-body"></p>
+    <div class="who" id="mc-who"></div>
+  </div>
+</div>
+
+<p id="status" role="status" aria-live="polite"></p>
 <script type="module" src="./src/main.js"></script>
 </body>
 </html>

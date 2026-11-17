@@ -1,174 +1,231 @@
-// The player on foot: camera-relative WASD movement, sprint, jump, a simple collision push out of
-// buildings, and the bridge to and from a car (enter/exit, so driving hands control to vehicles.js).
-// Marisol's look is fixed: red jacket, dark trousers, long dark hair.
-import * as THREE from 'three';
-import { PLAYER } from './config.js';
-import { Humanoid } from './humanoid.js';
+// The player: on foot and behind the wheel. Owns health, stamina, the weapon
+// wheel, the enter/exit dance, and the on-foot movement that resolves against the
+// city's collision boxes.
+
+import { PLAYER, WEAPONS } from './config.js';
+import { angleDelta, clamp, damp, lerp } from './math3d.js';
+import { drawPerson } from './models.js';
 
 export class Player {
-  constructor(city, opts = {}) {
-    this.city = city;
-    this.rig = new Humanoid({
-      skin: 0xc08a62, shirt: 0xd1402f, pants: 0x24303c, hair: 0x1a1210, longHair: true,
-      shoes: 0xe8e2d0, random: () => 0.5, scale: 1.0,
-    });
-    this.group = this.rig.group;
-    this.x = opts.x ?? 0;
-    this.z = opts.z ?? 0;
-    this.y = 0;
-    this.vy = 0;
-    this.heading = opts.heading ?? Math.PI;
-    this.speed = 0;
+  constructor(world) {
+    this.world = world;
+    this.x = 0; this.y = 0; this.z = 0;
+    this.vx = 0; this.vz = 0; this.vy = 0;
+    this.yaw = 0;
+    this.aimYaw = 0;
     this.health = PLAYER.health;
     this.armor = 0;
-    this.money = 500;
-    this.ammo = 34;
-    this.ammoReserve = 96;
-    this.car = null;
-    this.targetSpeed = 0;
+    this.money = 250;
+    this.stamina = 1;
+    this.onGround = true;
+    this.crouch = false;
     this.aiming = false;
-    this.firing = 0;
-    this.recoil = 0;
-    this.hurtFlash = 0;
-    this.footstepT = 0;
-    this.state = 'idle';
-    this.dying = false;
+    this.moving = 0;
+    this.phase = 0;
+    this.vehicle = null;
     this.dead = false;
+    this.deadTimer = 0;
+    this.radius = PLAYER.radius;
+    this.gun = 'pistol';
+    this.ammo = {
+      pistol: { mag: WEAPONS.pistol.mag, reserve: 72 },
+      smg: { mag: 0, reserve: 0 },
+      shotgun: { mag: 0, reserve: 0 },
+    };
+    this.fireCooldown = 0;
+    this.reloadTimer = 0;
+    this.shirt = [0.78, 0.34, 0.26];
+    this.pants = [0.20, 0.24, 0.30];
+    this.skin = [0.86, 0.68, 0.50];
+    this.hair = [0.10, 0.09, 0.08];
+    this.entering = 0;
+    this.wanted = 0;
+    this.wantedMeter = 0;
+    this.inWater = false;
+    this.footsteps = 0;
   }
 
-  get position() { return { x: this.x, y: this.y, z: this.z }; }
-
-  place(x, z, heading = this.heading) {
-    this.x = x;
-    this.z = z;
-    this.heading = heading;
-    this.y = 0;
-    this.vy = 0;
-    this.rig.rig.rotation.x = 0;
-    this.rig.rig.position.y = 0;
-    this.rig.group.rotation.set(0, heading, 0);
-    this.sync();
+  spawn(x, z, yaw = 0) {
+    this.x = x; this.z = z; this.yaw = yaw; this.aimYaw = yaw;
+    this.y = this.world.groundAt(x, z);
+    this.vx = 0; this.vz = 0; this.vy = 0;
+    this.dead = false;
+    this.health = PLAYER.health;
   }
 
-  sync() {
-    this.rig.group.position.set(this.x, this.y, this.z);
-    this.rig.group.rotation.y = this.heading;
+  get speed() { return Math.hypot(this.vx, this.vz); }
+  get pos() { return [this.x, this.y + 1.35, this.z]; }
+
+  currentWeapon() { return WEAPONS[this.gun]; }
+
+  equip(name) {
+    if (!WEAPONS[name]) return;
+    this.gun = name;
+    this.reloadTimer = 0;
   }
 
-  /** Camera-relative movement. Returns true while walking on a solid surface. */
-  move(dt, cameraYaw, input, blocked) {
-    this.aiming = input.aiming;
-    const ax = input.strafe;
-    const af = input.forward;
-    let wantX = 0, wantZ = 0;
-    if (ax || af) {
-      const fwdX = Math.sin(cameraYaw), fwdZ = Math.cos(cameraYaw);
-      const rightX = Math.cos(cameraYaw), rightZ = -Math.sin(cameraYaw);
-      wantX = fwdX * af + rightX * ax;
-      wantZ = fwdZ * af + rightZ * ax;
-      const len = Math.hypot(wantX, wantZ) || 1;
-      wantX /= len; wantZ /= len;
-    }
-    const sprint = input.sprint && !this.aiming;
-    const base = this.aiming ? PLAYER.walkSpeed * 0.68 : (sprint ? PLAYER.sprintSpeed : PLAYER.runSpeed);
-    const target = (ax || af) ? base : 0;
-    this.targetSpeed = target;
-    this.speed += (target - this.speed) * Math.min(1, dt * (target > this.speed ? 9 : 12));
-
-    if (this.speed > 0.05) {
-      const heading = Math.atan2(wantX, wantZ);
-      this.heading = lerpAngle(this.heading, heading, Math.min(1, dt * 12));
-      this.x += wantX * this.speed * dt;
-      this.z += wantZ * this.speed * dt;
-    }
-    // gravity and jump
-    if (input.jump && this.y <= 0.001) {
-      this.vy = PLAYER.jumpSpeed;
-      input.jump = false;
-    }
-    this.vy += PLAYER.gravity * dt;
-    this.y += this.vy * dt;
-    if (this.y < 0) { this.y = 0; this.vy = 0; }
-
-    resolveCircle(this, this.city.colliders, PLAYER.radius);
-    this.sync();
-    const moving = this.speed > 0.4;
-    this.rig.update(dt, moving ? this.speed : 0, { aiming: this.aiming });
-    this.state = this.aiming ? 'aim' : moving ? (sprint ? 'run' : 'walk') : 'idle';
-
-    if (moving) {
-      this.footstepT -= dt * this.speed;
-      if (this.footstepT <= 0) {
-        this.footstepT = 2.1;
-        return 'step';
-      }
-    }
-    return null;
+  giveAmmo(name, rounds) {
+    if (this.ammo[name]) this.ammo[name].reserve = Math.min(999, this.ammo[name].reserve + rounds);
   }
 
-  hurt(amount) {
+  damage(amount, from) {
     if (this.dead) return;
-    const absorbed = Math.min(this.armor, amount * 0.6);
-    this.armor -= absorbed;
-    this.health -= amount - absorbed;
-    this.hurtFlash = 1;
+    if (this.armor > 0) {
+      const absorbed = Math.min(this.armor, amount * 0.6);
+      this.armor -= absorbed;
+      amount -= absorbed;
+    }
+    this.health -= amount;
+    if (from) this.lastHitFrom = { x: from.x, z: from.z, t: 0 };
     if (this.health <= 0) {
       this.health = 0;
       this.dead = true;
-      this.rig.die();
+      this.deadTimer = 0;
+      if (this.vehicle) this.vehicle.eject();
     }
   }
 
-  heal(n) { this.health = Math.min(PLAYER.health, this.health + n); }
-
-  /** Where the muzzle is, in world space, for firing and for the tracer origin. */
-  muzzle() {
-    const c = Math.cos(this.heading), s = Math.sin(this.heading);
-    return {
-      x: this.x + s * 0.72 + c * 0.24,
-      y: this.y + 1.28,
-      z: this.z + c * 0.72 - s * 0.24,
-    };
+  reload() {
+    const w = this.currentWeapon();
+    const a = this.ammo[this.gun];
+    if (a.mag >= w.mag || a.reserve <= 0 || this.reloadTimer > 0) return;
+    this.reloadTimer = this.gun === 'shotgun' ? 1.15 : 0.95;
+    this.reloadTarget = this.gun;
   }
 
-  eye() { return { x: this.x, y: this.y + 1.62, z: this.z }; }
-}
+  canFire() {
+    const a = this.ammo[this.gun];
+    return !this.dead && this.fireCooldown <= 0 && this.reloadTimer <= 0 && a.mag > 0;
+  }
 
-/** Pushes a circle (actor) out of axis-aligned building boxes, sliding along the wall. */
-export function resolveCircle(actor, colliders, radius) {
-  for (const c of colliders) {
-    if (c.isWater) continue;
-    if (actor.y > (c.top ?? 99) - 0.1) continue;
-    const nx = Math.max(c.minX, Math.min(actor.x, c.maxX));
-    const nz = Math.max(c.minZ, Math.min(actor.z, c.maxZ));
-    const dx = actor.x - nx;
-    const dz = actor.z - nz;
-    const d2 = dx * dx + dz * dz;
-    if (d2 < radius * radius) {
-      const d = Math.sqrt(d2);
-      if (d < 0.0001) {
-        // dead centre: push out on the nearest axis
-        const left = Math.abs(actor.x - c.minX);
-        const right = Math.abs(c.maxX - actor.x);
-        const near = Math.abs(actor.z - c.minZ);
-        const far = Math.abs(c.maxZ - actor.z);
-        const m = Math.min(left, right, near, far);
-        if (m === left) actor.x = c.minX - radius;
-        else if (m === right) actor.x = c.maxX + radius;
-        else if (m === near) actor.z = c.minZ - radius;
-        else actor.z = c.maxZ + radius;
-      } else {
-        const push = radius - d;
-        actor.x += (dx / d) * push;
-        actor.z += (dz / d) * push;
+  consumeShot() {
+    const a = this.ammo[this.gun];
+    a.mag = Math.max(0, a.mag - 1);
+    this.fireCooldown = 60 / this.currentWeapon().rpm;
+  }
+
+  update(dt, input, cam, game) {
+    if (this.dead) {
+      this.deadTimer += dt;
+      this.moving = 0;
+      return;
+    }
+    this.fireCooldown = Math.max(0, this.fireCooldown - dt);
+    if (this.reloadTimer > 0) {
+      this.reloadTimer -= dt;
+      if (this.reloadTimer <= 0) {
+        const w = WEAPONS[this.reloadTarget];
+        const a = this.ammo[this.reloadTarget];
+        const need = w.mag - a.mag;
+        const take = Math.min(need, a.reserve);
+        a.mag += take;
+        a.reserve -= take;
       }
     }
+    if (this.lastHitFrom) this.lastHitFrom.t += dt;
+
+    if (this.vehicle) return; // the vehicle module drives
+
+    const { x: ax, y: ay } = input.axis();
+    const wantAim = input.mouseDown || input.down('KeyQ');
+    this.aiming = wantAim && this.onGround;
+    this.crouch = false;
+
+    // camera-relative movement basis
+    const cy = cam.yaw;
+    const fwd = [-Math.sin(cy), Math.cos(cy)];
+    const right = [-Math.cos(cy), -Math.sin(cy)];
+    let dx = fwd[0] * ay + right[0] * ax;
+    let dz = fwd[1] * ay + right[1] * ax;
+    const mag = Math.hypot(dx, dz);
+    if (mag > 1) { dx /= mag; dz /= mag; }
+    const inputMag = Math.min(1, mag);
+
+    const running = input.down('ShiftLeft') && inputMag > 0.1 && !this.aiming;
+    let speedTarget = this.aiming ? PLAYER.walk * 0.62 : running ? PLAYER.run : PLAYER.walk;
+    if (this.inWater) speedTarget = PLAYER.swim;
+    if (running && !this.inWater) {
+      this.stamina = Math.max(0, this.stamina - dt * 0.16);
+      if (this.stamina <= 0) speedTarget = PLAYER.walk;
+    } else {
+      this.stamina = Math.min(1, this.stamina + dt * 0.12);
+    }
+
+    const accel = this.onGround ? 26 : 6;
+    this.vx = damp(this.vx, dx * speedTarget * inputMag, accel * 0.35, dt);
+    this.vz = damp(this.vz, dz * speedTarget * inputMag, accel * 0.35, dt);
+
+    // face the movement, or face the camera when aiming
+    if (this.aiming) {
+      this.yaw = cy;
+    } else if (inputMag > 0.15) {
+      const targetYaw = Math.atan2(-dx, dz);
+      this.yaw += angleDelta(this.yaw, targetYaw) * Math.min(1, dt * 12);
+    }
+
+    // integrate with collision
+    let nx = this.x + this.vx * dt;
+    let nz = this.z + this.vz * dt;
+    const [rx, rz] = this.world.colliders.resolve(nx, nz, this.radius);
+    if (Math.abs(rx - nx) > 1e-6) this.vx *= 0.2;
+    if (Math.abs(rz - nz) > 1e-6) this.vz *= 0.2;
+    nx = rx; nz = rz;
+
+    // water: swim, don't walk on the seabed
+    const g = this.world.groundAt(nx, nz);
+    this.inWater = g < this.world.waterY - 0.05;
+    if (this.inWater) {
+      this.y = damp(this.y, this.world.waterY - 0.85, 4, dt);
+      this.vy = 0;
+      this.onGround = false;
+    } else {
+      if (this.y > g + 0.2) {
+        this.vy -= PLAYER.gravity * dt;
+        this.onGround = false;
+      } else {
+        this.y = g; this.vy = 0; this.onGround = true;
+      }
+      if (input.hit('Space') && this.onGround) { this.vy = PLAYER.jump; this.onGround = false; }
+      this.y += this.vy * dt;
+      if (this.y <= g) { this.y = g; this.vy = 0; this.onGround = true; }
+    }
+
+    this.x = nx; this.z = nz;
+
+    const sp = this.speed;
+    this.moving = clamp(sp / PLAYER.run, 0, 1);
+    this.phase += dt * (0.5 + this.moving * 2.2);
+
+    // entering a car
+    if (input.hit('KeyF')) game.tryEnterVehicle();
+    if (input.hit('KeyR')) this.reload();
+    if (input.hit('Digit1')) this.equip('pistol');
+    if (input.hit('Digit2') && this.ammo.smg.reserve + this.ammo.smg.mag > 0) this.equip('smg');
+    if (input.hit('Digit3') && this.ammo.shotgun.reserve + this.ammo.shotgun.mag > 0) this.equip('shotgun');
+  }
+
+  draw(buf) {
+    drawPerson(buf, {
+      x: this.x, y: this.y, z: this.z, yaw: this.aiming ? this.aimYaw : this.yaw,
+      shirt: this.shirt, pants: this.pants, skin: this.skin, hair: this.hair,
+      phase: this.phase, moving: this.moving, aim: this.aiming,
+      gun: this.gun !== 'pistol' || true, armed: true, down: this.dead,
+    });
+  }
+
+  serialize() {
+    return {
+      x: this.x, z: this.z, yaw: this.yaw, health: this.health, armor: this.armor,
+      money: this.money, gun: this.gun, ammo: this.ammo, wanted: this.wanted,
+    };
+  }
+  restore(s) {
+    this.x = s.x; this.z = s.z; this.yaw = s.yaw;
+    this.y = this.world.groundAt(s.x, s.z);
+    this.health = s.health; this.armor = s.armor; this.money = s.money;
+    this.gun = s.gun ?? 'pistol';
+    this.ammo = s.ammo ?? this.ammo;
+    this.wanted = s.wanted ?? 0;
+    this.dead = false;
   }
 }
-
-export function lerpAngle(a, b, t) {
-  let diff = ((b - a + Math.PI * 3) % (Math.PI * 2)) - Math.PI;
-  return a + diff * t;
-}
-
-export { THREE };

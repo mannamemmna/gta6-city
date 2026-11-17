@@ -1,274 +1,224 @@
-// Gunfire and its effects: a hitscan pistol with recoil, tracers, muzzle flash, wall sparks, blood
-// puffs and car explosions. Effects are pooled sprites and short-lived meshes so firing a whole
-// magazine never allocates a new material.
-import * as THREE from 'three';
-import { PLAYER } from './config.js';
-import { raySphere } from './pedestrians.js';
+// Ballistics: hitscan for the player and for the police, tracers, impact sparks,
+// blood and dust, and the damage bookkeeping that links a shot to a wanted level.
+// Also drives the melee swing and the vehicle explosions' area damage.
 
-const MAX_TRACERS = 26;
+import { V3, clamp } from './math3d.js';
+import { rayBox } from './world.js';
 
-function spriteTexture(kind) {
-  const canvas = document.createElement('canvas');
-  canvas.width = 64; canvas.height = 64;
-  const ctx = canvas.getContext('2d');
-  if (kind === 'flash') {
-    const g = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
-    g.addColorStop(0, 'rgba(255,255,235,1)');
-    g.addColorStop(0.3, 'rgba(255,214,120,0.9)');
-    g.addColorStop(1, 'rgba(255,150,40,0)');
-    ctx.fillStyle = g; ctx.fillRect(0, 0, 64, 64);
-  } else if (kind === 'spark') {
-    const g = ctx.createRadialGradient(32, 32, 0, 32, 32, 32);
-    g.addColorStop(0, 'rgba(255,246,210,1)');
-    g.addColorStop(0.4, 'rgba(255,190,90,0.75)');
-    g.addColorStop(1, 'rgba(255,120,30,0)');
-    ctx.fillStyle = g; ctx.fillRect(0, 0, 64, 64);
-  } else if (kind === 'smoke') {
-    const g = ctx.createRadialGradient(32, 32, 4, 32, 32, 32);
-    g.addColorStop(0, 'rgba(120,110,105,0.85)');
-    g.addColorStop(1, 'rgba(80,74,70,0)');
-    ctx.fillStyle = g; ctx.fillRect(0, 0, 64, 64);
-  } else {
-    const g = ctx.createRadialGradient(32, 32, 0, 32, 32, 30);
-    g.addColorStop(0, 'rgba(255,80,50,1)');
-    g.addColorStop(1, 'rgba(190,20,10,0)');
-    ctx.fillStyle = g; ctx.fillRect(0, 0, 64, 64);
+export class Combat {
+  constructor(world, game) {
+    this.world = world;
+    this.game = game;
+    this.lastShot = 0;
+    this.hitMarker = 0;
+    this.kills = 0;
+    this.recoil = 0;
+    this.meleeTimer = 0;
   }
-  const tex = new THREE.CanvasTexture(canvas);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  return tex;
-}
 
-export class CombatSystem {
-  constructor(city, scene, opts = {}) {
-    this.city = city;
-    this.scene = scene;
-    this.tracers = [];
-    this.flashes = [];
-    this.puffs = [];
-    this.explosions = [];
-    this.decals = [];
-    this.onKill = null;
-    this.onDamagePlayer = null;
-    this.stats = { shots: 0, hits: 0, kills: 0 };
-    this.tex = {
-      flash: spriteTexture('flash'),
-      spark: spriteTexture('spark'),
-      smoke: spriteTexture('smoke'),
-      blood: spriteTexture('blood'),
-    };
-    // tracer pool: thin additive quads, reused
-    this.tracerGroup = new THREE.Group();
-    scene.add(this.tracerGroup);
-    for (let i = 0; i < MAX_TRACERS; i += 1) {
-      const geo = new THREE.PlaneGeometry(1, 1);
-      const mat = new THREE.MeshBasicMaterial({
-        color: 0xfff0c0, transparent: true, opacity: 0, depthWrite: false,
-        blending: THREE.AdditiveBlending, side: THREE.DoubleSide,
-      });
-      const mesh = new THREE.Mesh(geo, mat);
-      mesh.visible = false;
-      this.tracerGroup.add(mesh);
-      this.tracers.push({ mesh, life: 0 });
+  update(dt, input, cam) {
+    this.hitMarker = Math.max(0, this.hitMarker - dt * 3);
+    this.meleeTimer = Math.max(0, this.meleeTimer - dt);
+    const p = this.game.player;
+    if (p.dead || p.vehicle) return;
+    const w = p.currentWeapon();
+    const wants = w.auto ? input.mouseDown : input.mouseClicked;
+    if (wants && p.canFire()) {
+      p.consumeShot();
+      const pellets = w.pellets ?? 1;
+      for (let i = 0; i < pellets; i++) this.playerShot(p, cam, w);
+      this.recoil = Math.min(1, this.recoil + 0.5);
+      this.game.audio.gunshot(p.gun);
+      cam.shake = Math.min(0.35, cam.shake + (p.gun === 'shotgun' ? 0.26 : 0.10));
+      this.game.police.crime('shot fired', 0.32);
+      this.game.alarmLevel = Math.min(1, this.game.alarmLevel + 0.5);
+      // the street reacts
+      for (const ped of this.game.peds) {
+        if (Math.hypot(ped.x - p.x, ped.z - p.z) < 30) ped.scare(p, 6);
+      }
+      this.muzzle = { x: p.x, z: p.z, y: p.y + 1.45, life: 0.05 };
     }
-    this.tracerIndex = 0;
-    // one reusable directional light for muzzle flashes near the player
-    this.flashLight = new THREE.PointLight(0xffd08a, 0, 18, 2);
-    scene.add(this.flashLight);
-    this.flashLightLife = 0;
-    this.sparkPool = [];
+    if (input.mouseClicked && !w.auto && !p.canFire() && p.ammo[p.gun].mag === 0) {
+      p.reload();
+    }
+    if (input.hit('KeyE')) this.melee(p);
   }
 
-  /** A ray against the world: returns distance to the first building face hit, or maxDist. */
-  rayWorld(origin, dir, maxDist) {
-    let best = maxDist;
-    const step = 0.6;
-    for (let t = 0.5; t < maxDist; t += step) {
-      const x = origin.x + dir.x * t;
-      const y = origin.y + dir.y * t;
-      const z = origin.z + dir.z * t;
-      if (y < 0) return Math.min(best, t);
-      for (const c of this.city.colliders) {
-        if (c.isWater) continue;
-        if (x > c.minX && x < c.maxX && z > c.minZ && z < c.maxZ && y < (c.top ?? 60)) {
-          return Math.min(best, t);
+  playerShot(p, cam, w) {
+    const ray = cam.shotRay(p.y + 1.45);
+    const spread = w.spread * (this.game.player.aiming ? 0.45 : 1);
+    const dir = V3.norm([
+      ray.dir[0] + (Math.random() - 0.5) * spread,
+      ray.dir[1] + (Math.random() - 0.5) * spread * 0.7,
+      ray.dir[2] + (Math.random() - 0.5) * spread,
+    ]);
+    const origin = [p.x, p.y + 1.45, p.z];
+    const result = this.trace(origin, dir, w.range, true);
+    const end = result.point;
+    this.world.addTracer([origin[0] + dir[0] * 0.7, origin[1] - 0.1, origin[2] + dir[2] * 0.7], end);
+
+    if (result.kind === 'ped') {
+      const dead = result.ref.hurt(w.dmg, dir, this.world);
+      this.hitMarker = 1;
+      this.world.addSpark(end[0], end[1], end[2], 5, [0.55, 0.05, 0.05]);
+      if (dead) {
+        this.kills++;
+        this.game.police.crime('pedestrian down', 0.9);
+        this.game.onPedKilled(result.ref);
+      } else {
+        this.game.police.crime('pedestrian down', 0.4);
+      }
+    } else if (result.kind === 'officer') {
+      this.game.police.hitOfficer(result.ref, w.dmg, dir);
+      this.hitMarker = 1;
+      this.world.addSpark(end[0], end[1], end[2], 5, [0.55, 0.05, 0.05]);
+    } else if (result.kind === 'vehicle') {
+      result.ref.health -= w.dmg * 0.65;
+      this.world.addSpark(end[0], end[1], end[2], 6, [1.0, 0.78, 0.34]);
+      this.game.police.crime('property damage', 0.25);
+      if (result.ref.health <= 0 && !result.ref.dead) {
+        result.ref.explode(this.world);
+        this.game.onVehicleDestroyed(result.ref);
+      }
+      if (result.ref.ai?.kind === 'traffic') result.ref.ai.kind = 'flee';
+    } else if (result.kind === 'world') {
+      this.world.addSpark(end[0], end[1], end[2], 4, [0.85, 0.84, 0.80]);
+    }
+  }
+
+  // One hitscan pass: pedestrians, officers, vehicles, then city boxes.
+  trace(origin, dir, range, fromPlayer) {
+    let best = { t: range, kind: 'air', point: V3.add(origin, V3.scale(dir, range)), ref: null };
+    const consider = (x, y, z, radius, height, kind, ref) => {
+      // cylinder test
+      const ox = x - origin[0], oz = z - origin[2];
+      const tProj = ox * dir[0] + oz * dir[2];
+      const perp2 = ox * ox + oz * oz - tProj * tProj;
+      if (perp2 > radius * radius) return;
+      const half = Math.sqrt(Math.max(0, radius * radius - perp2));
+      let t = tProj - half;
+      if (t < 0.2) t = tProj + half;
+      if (t < 0.2 || t > best.t) return;
+      const py = origin[1] + dir[1] * t;
+      if (py < y - 0.1 || py > y + height) return;
+      best = { t, kind, point: V3.add(origin, V3.scale(dir, t)), ref };
+    };
+
+    if (fromPlayer) {
+      for (const ped of this.game.peds) {
+        if (ped.dead) continue;
+        consider(ped.x, ped.y, ped.z, 0.46, 1.9, 'ped', ped);
+      }
+    }
+    for (const o of this.game.police.officers) {
+      if (o.down) continue;
+      consider(o.x, o.y, o.z, 0.46, 1.9, 'officer', o);
+    }
+    for (const v of this.game.vehicles) {
+      if (v.dead) continue;
+      const ex = Math.abs(v.x - origin[0]), ez = Math.abs(v.z - origin[2]);
+      if (ex > 12 && ez > 12) continue;
+      consider(v.x, v.y, v.z, v.spec.len * 0.42, v.spec.hgt + 0.4, 'vehicle', v);
+    }
+
+    // city boxes near the ray
+    const step = 6;
+    const maxT = Math.min(best.t, range);
+    for (let t = 0; t < maxT; t += step) {
+      const px = origin[0] + dir[0] * t;
+      const pz = origin[2] + dir[2] * t;
+      const boxes = this.world.colliders.query(px, pz, step);
+      for (const b of boxes) {
+        const hit = rayBox(origin, dir, b, best.t);
+        if (hit !== null && hit < best.t && hit > 0.2) {
+          best = { t: hit, kind: 'world', point: V3.add(origin, V3.scale(dir, hit)), ref: b };
         }
       }
+      if (best.kind === 'world' && best.t < t) break;
     }
     return best;
   }
 
-  /** Fires one pistol round from `origin` along `dir`. */
-  fire(origin, dir, { damage = 34, range = PLAYER.weaponRange, fromPlayer = true } = {}) {
-    this.stats.shots += 1;
-    const worldDist = this.rayWorld(origin, dir, range);
-    let end = {
-      x: origin.x + dir.x * worldDist, y: origin.y + dir.y * worldDist, z: origin.z + dir.z * worldDist,
-    };
-    let hitSomething = null;
-    const pedHit = this.pedSystem?.hitTest(origin, dir, worldDist);
-    const officerHit = this.policeSystem?.hitOfficer(origin, dir, worldDist);
-    const carHit = this.carHitTest(origin, dir, worldDist);
-    let bestT = worldDist;
-    if (pedHit && pedHit.t < bestT) { bestT = pedHit.t; hitSomething = { kind: 'ped', target: pedHit.ped }; }
-    if (officerHit && officerHit.t < bestT) { bestT = officerHit.t; hitSomething = { kind: 'officer', target: officerHit.officer }; }
-    if (carHit && carHit.t < bestT) { bestT = carHit.t; hitSomething = { kind: 'car', target: carHit.car }; }
-    if (hitSomething) {
-      end = { x: origin.x + dir.x * bestT, y: origin.y + dir.y * bestT, z: origin.z + dir.z * bestT };
-      this.stats.hits += 1;
-      if (hitSomething.kind === 'ped') {
-        this.puff(end, 'blood');
-        this.pedSystem.kill(hitSomething.target);
-        this.stats.kills += 1;
-        if (fromPlayer) this.onKill?.({ kind: 'ped', target: hitSomething.target });
-      } else if (hitSomething.kind === 'officer') {
-        this.puff(end, 'blood');
-        hitSomething.target.hp -= damage;
-        if (hitSomething.target.hp <= 0) {
-          this.policeSystem.killOfficer(hitSomething.target);
-          this.stats.kills += 1;
-          if (fromPlayer) this.onKill?.({ kind: 'officer', target: hitSomething.target });
-        }
+  melee(p) {
+    if (this.meleeTimer > 0 || p.vehicle) return;
+    this.meleeTimer = 0.42;
+    this.game.audio.punch();
+    const fwd = [-Math.sin(p.yaw), -Math.cos(p.yaw)];
+    for (const ped of this.game.peds) {
+      const dx = ped.x - p.x, dz = ped.z - p.z;
+      const d = Math.hypot(dx, dz);
+      if (d < 2.0 && dx * fwd[0] + dz * fwd[1] > 0.4) {
+        ped.hurt(55, fwd, this.world);
+        this.game.audio.impact();
+        this.game.police.crime('assault', 0.5);
+        return;
+      }
+    }
+    for (const o of this.game.police.officers) {
+      if (o.down) continue;
+      const dx = o.x - p.x, dz = o.z - p.z;
+      const d = Math.hypot(dx, dz);
+      if (d < 2.0 && dx * fwd[0] + dz * fwd[1] > 0.4) {
+        this.game.police.hitOfficer(o, 30, fwd);
+        this.game.audio.impact();
+        return;
+      }
+    }
+  }
+
+  // Police fire back at the player.
+  officerShot(officer, target, level) {
+    const origin = [officer.x, officer.y + 1.42, officer.z];
+    const spread = 0.06 + Math.max(0, 3 - level) * 0.03;
+    const dir = V3.norm([
+      (target.x - origin[0]) / Math.max(1, Math.hypot(target.x - officer.x, target.z - officer.z)) +
+        (Math.random() - 0.5) * spread,
+      (Math.random() - 0.5) * spread * 0.6,
+      (target.z - origin[2]) / Math.max(1, Math.hypot(target.x - officer.x, target.z - officer.z)) +
+        (Math.random() - 0.5) * spread,
+    ]);
+    const dist = Math.hypot(target.x - officer.x, target.z - officer.z);
+    const hitRoll = Math.random() < clamp(1 - dist / 90, 0.12, 0.72);
+    const end = hitRoll
+      ? [target.x, (this.game.player.vehicle ? this.game.player.vehicle.y + 1.0 : this.game.player.y + 1.2), target.z]
+      : [origin[0] + dir[0] * 60, origin[1] + dir[1] * 60, origin[2] + dir[2] * 60];
+    this.world.addTracer(origin, end);
+    this.game.audio.distantShot(dist);
+    if (hitRoll) {
+      const dmg = 6 + Math.random() * 5 + level * 1.6;
+      if (this.game.player.vehicle) {
+        this.game.player.vehicle.health -= dmg * 0.9;
+        this.world.addSpark(end[0], end[1], end[2], 3, [1, 0.85, 0.4]);
+        if (this.game.player.vehicle.health <= 0) this.game.player.vehicle.explode(this.world);
       } else {
-        this.sparks(end.x, end.y, end.z);
-        const car = hitSomething.target;
-        car.health -= damage * 0.55;
-        if (car.health <= 0) this.explode(car.x, car.z, 3.6);
-      }
-    } else {
-      if (worldDist < range - 0.5) this.sparks(end.x, end.y, end.z);
-    }
-    this.trace(origin, end);
-    return { end, hit: hitSomething };
-  }
-
-  carHitTest(origin, dir, maxDist) {
-    let best = null;
-    let bestT = maxDist;
-    for (const car of (this.trafficSystem?.cars ?? [])) {
-      if (car.occupant) continue;
-      const t = raySphere(origin, dir, { x: car.x, y: 0.9, z: car.z }, 1.5);
-      if (t !== null && t < bestT) { bestT = t; best = car; }
-    }
-    return best ? { car: best, t: bestT } : null;
-  }
-
-  trace(from, to) {
-    const slot = this.tracers[this.tracerIndex % MAX_TRACERS];
-    this.tracerIndex += 1;
-    const m = slot.mesh;
-    const dx = to.x - from.x, dy = to.y - from.y, dz = to.z - from.z;
-    const len = Math.hypot(dx, dy, dz) || 1;
-    m.position.set((from.x + to.x) / 2, (from.y + to.y) / 2, (from.z + to.z) / 2);
-    m.scale.set(0.05, len, 1);
-    m.visible = true;
-    m.material.opacity = 0.9;
-    // orient the plane along the ray, facing the camera-ish
-    m.lookAt(to.x, to.y, to.z);
-    m.rotateX(Math.PI / 2);
-    slot.life = 0.07;
-    this.flash(from, 0.9);
-  }
-
-  flash(pos, scale = 1) {
-    const mat = new THREE.SpriteMaterial({
-      map: this.tex.flash, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true,
-    });
-    const sprite = new THREE.Sprite(mat);
-    sprite.position.set(pos.x, pos.y, pos.z);
-    sprite.scale.setScalar(0.7 * scale);
-    this.scene.add(sprite);
-    this.flashes.push({ sprite, life: 0.07, ttl: 0.07 });
-    this.flashLight.position.set(pos.x, pos.y + 0.2, pos.z);
-    this.flashLight.intensity = 22;
-    this.flashLightLife = 0.06;
-  }
-
-  sparks(x, y, z) {
-    for (let i = 0; i < 4; i += 1) {
-      const mat = new THREE.SpriteMaterial({
-        map: this.tex.spark, blending: THREE.AdditiveBlending, depthWrite: false, transparent: true,
-      });
-      const s = new THREE.Sprite(mat);
-      s.position.set(x, y, z);
-      s.scale.setScalar(0.3 + Math.random() * 0.4);
-      this.scene.add(s);
-      this.puffs.push({
-        sprite: s, life: 0.34, ttl: 0.34,
-        vx: (Math.random() - 0.5) * 3, vy: Math.random() * 2.4, vz: (Math.random() - 0.5) * 3,
-      });
-    }
-  }
-
-  puff(pos, kind) {
-    const mat = new THREE.SpriteMaterial({
-      map: kind === 'blood' ? this.tex.blood : this.tex.smoke,
-      transparent: true, depthWrite: false,
-    });
-    const s = new THREE.Sprite(mat);
-    s.position.set(pos.x, pos.y, pos.z);
-    s.scale.setScalar(0.9);
-    this.scene.add(s);
-    this.puffs.push({ sprite: s, life: 0.5, ttl: 0.5, vx: (Math.random() - 0.5), vy: 0.6, vz: (Math.random() - 0.5) });
-  }
-
-  explode(x, z, radius) {
-    const pos = { x, y: 1.1, z };
-    for (let i = 0; i < 12; i += 1) {
-      const mat = new THREE.SpriteMaterial({
-        map: i < 6 ? this.tex.flash : this.tex.smoke,
-        blending: i < 6 ? THREE.AdditiveBlending : THREE.NormalBlending,
-        depthWrite: false, transparent: true,
-      });
-      const s = new THREE.Sprite(mat);
-      s.position.set(x + (Math.random() - 0.5) * 1.6, 0.8 + Math.random() * 1.4, z + (Math.random() - 0.5) * 1.6);
-      s.scale.setScalar(1.6 + Math.random() * 2.2);
-      this.scene.add(s);
-      this.puffs.push({
-        sprite: s, life: 1.2 + Math.random() * 0.5, ttl: 1.7,
-        vx: (Math.random() - 0.5) * 2.4, vy: 1.2 + Math.random() * 2.4, vz: (Math.random() - 0.5) * 2.4,
-      });
-    }
-    this.flashLight.position.set(x, 2.4, z);
-    this.flashLight.intensity = 90;
-    this.flashLightLife = 0.45;
-    this.explosions.push({ x, z, t: 0, radius });
-    if (this.onExplosion) this.onExplosion(x, z, radius);
-  }
-
-  update(dt) {
-    for (const t of this.tracers) {
-      if (t.life > 0) {
-        t.life -= dt;
-        t.mesh.material.opacity = Math.max(0, t.life / 0.07) * 0.9;
-        if (t.life <= 0) t.mesh.visible = false;
+        this.game.player.damage(dmg, officer);
+        this.world.addSpark(end[0], end[1], end[2], 4, [0.6, 0.06, 0.06]);
+        this.game.cam.shake = Math.min(0.4, this.game.cam.shake + 0.12);
+        this.game.audio.playerHit();
       }
     }
-    for (let i = this.flashes.length - 1; i >= 0; i -= 1) {
-      const f = this.flashes[i];
-      f.life -= dt;
-      f.sprite.material.opacity = Math.max(0, f.life / f.ttl);
-      f.sprite.scale.multiplyScalar(1 + dt * 12);
-      if (f.life <= 0) { this.scene.remove(f.sprite); f.sprite.material.dispose(); this.flashes.splice(i, 1); }
-    }
-    for (let i = this.puffs.length - 1; i >= 0; i -= 1) {
-      const p = this.puffs[i];
-      p.life -= dt;
-      p.sprite.position.x += p.vx * dt;
-      p.sprite.position.y += p.vy * dt;
-      p.sprite.position.z += p.vz * dt;
-      p.vy -= dt * 1.6;
-      p.sprite.material.opacity = Math.max(0, p.life / p.ttl);
-      if (p.life <= 0) { this.scene.remove(p.sprite); p.sprite.material.dispose(); this.puffs.splice(i, 1); }
-    }
-    this.flashLightLife -= dt;
-    if (this.flashLightLife <= 0) this.flashLight.intensity *= Math.max(0, 1 - dt * 14);
-    for (const e of this.explosions) e.t += dt;
   }
 
-  bind(pedSystem, policeSystem, trafficSystem) {
-    this.pedSystem = pedSystem;
-    this.policeSystem = policeSystem;
-    this.trafficSystem = trafficSystem;
+  // Area damage when a car goes up.
+  explosion(x, z, radius = 9) {
+    const p = this.game.player;
+    const d = Math.hypot(p.x - x, p.z - z);
+    if (d < radius) p.damage(40 * (1 - d / radius), { x, z });
+    for (const ped of this.game.peds) {
+      const dd = Math.hypot(ped.x - x, ped.z - z);
+      if (dd < radius) ped.hurt(100 * (1 - dd / radius), { x: x - ped.x, z: z - ped.z }, this.world);
+    }
+    for (const o of this.game.police.officers) {
+      const dd = Math.hypot(o.x - x, o.z - z);
+      if (dd < radius) this.game.police.hitOfficer(o, 100 * (1 - dd / radius), null);
+    }
+    for (const v of this.game.vehicles) {
+      if (v.dead) continue;
+      const dd = Math.hypot(v.x - x, v.z - z);
+      if (dd < radius * 0.9 && dd > 0.1) {
+        v.health -= 70 * (1 - dd / radius);
+        if (v.health <= 0) v.explode(this.world);
+      }
+    }
   }
 }

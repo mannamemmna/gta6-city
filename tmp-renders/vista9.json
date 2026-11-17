@@ -1,0 +1,7 @@
+[
+  { "name": "i1", "js": "g.world.clock=17.85;g.cam.pos=[150,58,330];g.cam.target=[-30,26,-120];g.cam.fov=1.03;g.sunOverride={az:0.55,el:0.20};g.fogOverride=1300;" },
+  { "name": "i2", "js": "g.world.clock=17.85;g.cam.pos=[230,40,300];g.cam.target=[-10,30,-160];g.cam.fov=1.06;g.sunOverride={az:0.35,el:0.17};g.fogOverride=1300;" },
+  { "name": "i3", "js": "g.world.clock=17.85;g.cam.pos=[60,90,380];g.cam.target=[0,20,-200];g.cam.fov=1.0;g.sunOverride={az:0.7,el:0.22};g.fogOverride=1500;" },
+  { "name": "i4", "js": "g.world.clock=17.85;g.cam.pos=[-180,46,260];g.cam.target=[40,30,-100];g.cam.fov=1.05;g.sunOverride={az:-0.4,el:0.18};g.fogOverride=1300;" },
+  { "name": "i5", "js": "g.world.clock=17.85;g.cam.pos=[300,70,240];g.cam.target=[-60,34,-180];g.cam.fov=1.02;g.sunOverride={az:0.15,el:0.19};g.fogOverride=1400;" }
+]
