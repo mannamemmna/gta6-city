@@ -2,3 +2,4 @@ out/
 out2/
 tmp-renders/
 node_modules/
+.makefun_owner_tmp
